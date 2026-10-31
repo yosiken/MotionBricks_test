@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MotionBricks Live Demo</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0d1117; overflow: hidden; font-family: system-ui, sans-serif; }
+    canvas { display: block; }
+    #hud {
+      position: fixed; top: 16px; left: 16px; padding: 14px 18px; min-width: 260px;
+      background: rgba(20, 24, 32, 0.78); color: #e6edf3; border-radius: 10px; font-size: 13px; line-height: 1.7;
+      backdrop-filter: blur(4px);
+    }
+    #hud h1 { font-size: 16px; margin: 0 0 6px; }
+    #hud .dim { color: #9aa4b2; }
+    #hud .stat { margin-top: 8px; color: #c9d1d9; }
+    #hud.hidden { display: none; }
+    #drop { position: fixed; bottom: 16px; left: 16px; color: #9aa4b2; font-size: 12px; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/",
+      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.1.0/lib/three-vrm.module.min.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="hud">
+    <h1>MotionBricks ライブ</h1>
+    <div><span class="dim">矢印 / WASD</span>　ダッシュ（カメラ基準）</div>
+    <div><span class="dim">Shift</span>　歩き　<span class="dim">C</span>　しゃがむ／立つ　<span class="dim">H</span>　この表示を隠す</div>
+    <div><span class="dim">マウスドラッグ</span>　カメラ回転</div>
+    <div>箱や塀に向かって走ると、自動で飛び越えます</div>
+    <div class="stat" id="stat">初期化中…</div>
+  </div>
+  <div id="drop">.vrm ファイルをドラッグ＆ドロップでモデル差し替え</div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
