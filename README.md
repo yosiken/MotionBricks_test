@@ -95,10 +95,10 @@ generate(control) -> Promise<{ frames, tokens }>
 
 VRM で書き出したものを、画面にドラッグ＆ドロップするか `?vrm=./models/ファイル名.vrm` で読み込みます。T ポーズ・正面 -Y・実寸（1 単位 = 1m）で作り、[VRM Add-on for Blender](https://vrm-addon-for-blender.info) でヒューマノイドのボーンを割り当てて書き出してください。
 
-Tripo で自動リグを付けたもの（`bone_0`〜`bone_51`）は、次のコマンドでボーンの割り当てと T ポーズ化をして書き出せます（元の `.blend` は保存しません）。
+Tripo で自動リグを付けたもの（`bone_0`〜`bone_51`）と Mixamo のリグ（`mixamorig:Hips` など）は、次のコマンドでボーンの割り当てと T ポーズ化をして書き出せます（元の `.blend` は保存しません）。Mixamo の FBX を読み込んだままで、レスト姿勢が寝ていてアニメーションの 1 フレーム目で起き上がるものは、その姿勢をレスト姿勢として焼き込みます。
 
 ```bash
-blender -b キャラクター.blend --python tools/tripo_blend_to_vrm.py -- models/キャラクター.vrm
+blender -b キャラクター.blend --python tools/blend_to_vrm.py -- models/キャラクター.vrm
 ```
 
 カメラと飛び越えの判定はキャラクターの腰の高さに合わせて変わります。小柄なキャラクターほど、飛び越えられる箱は低くなります（人間の寸法で 0.95m まで）。
