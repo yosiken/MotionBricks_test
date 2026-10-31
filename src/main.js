@@ -5,7 +5,8 @@ import { createWorld, probeObstacle } from './world.js';
 import { MotionPlayer } from './motion/player.js';
 import { ProceduralGenerator } from './motion/proceduralGenerator.js';
 
-// ?gen=onnx で ONNX/WebGPU 版、?vrm=URL で VRM を読み込む
+// ?gen=planner で MotionBricks プランナー（ONNX/WebGPU）、?gen=g1test で G1 リターゲットのテスト、
+// ?model=URL でプランナーの ONNX、?modelData=URL でその外部重みファイル、?vrm=URL で VRM を指定する
 const params = new URLSearchParams(location.search);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -27,16 +28,24 @@ input.onToggleHud = () => hud.classList.toggle('hidden');
 
 // ---- 生成器 ----
 let generator = new ProceduralGenerator();
-if (params.get('gen') === 'onnx') {
+const gen = params.get('gen');
+if (gen === 'planner' || gen === 'onnx') {
   try {
-    const { OnnxMotionGenerator } = await import('./motion/onnxGenerator.js');
-    const g = new OnnxMotionGenerator();
+    const { PlannerGenerator } = await import('./motion/plannerGenerator.js');
+    statEl.textContent = 'プランナーの ONNX を読み込み中…';
+    const g = new PlannerGenerator({
+      modelUrl: params.get('model') ?? './models/planner_sonic.onnx',
+      dataUrl: params.get('modelData'),
+    });
     await g.init();
     generator = g;
   } catch (e) {
     console.error(e);
-    statEl.textContent = `ONNX 初期化失敗、ダミーで起動: ${e.message}`;
+    alert(`プランナーの初期化に失敗したので、ダミーで起動します: ${e.message}`);
   }
+} else if (gen === 'g1test') {
+  const { G1TestGenerator } = await import('./motion/g1TestGenerator.js');
+  generator = new G1TestGenerator();
 }
 const player = new MotionPlayer(generator);
 
@@ -95,7 +104,7 @@ function getControl() {
   const turn = moving ? wrapAngle(yaw - character.yaw) : 0;
 
   let vault = null;
-  if (moving && !input.crouch && Math.abs(turn) < 0.4 && !player.hasQueuedTag('vault')) {
+  if (generator.supportsVault && moving && !input.crouch && Math.abs(turn) < 0.4 && !player.hasQueuedTag('vault')) {
     const hit = probeObstacle(obstacles, character.root.position, character.yaw);
     if (hit) {
       const dist = hit.dist - player.queuedForward;
@@ -104,7 +113,7 @@ function getControl() {
   }
   modeLabel = vault ? '飛び越え' : input.crouch ? (moving ? 'しゃがみ歩き' : 'しゃがみ')
     : moving ? (input.walk ? '歩き' : 'ダッシュ') : '待機';
-  return { turn, speed, crouch: input.crouch, vault };
+  return { moving, yaw, turn, speed, crouch: input.crouch, vault };
 }
 
 function wrapAngle(a) {
@@ -114,6 +123,7 @@ function wrapAngle(a) {
 // 飛び越えずに障害物へめり込むのを防ぐ（簡易）
 const lastSafe = new THREE.Vector3();
 function resolveCollision() {
+  if (player.cur?.root) return; // G1 系は位置をモデルが決めるので押し戻さない（障害物は素通りする）
   const tag = player.currentTag;
   if (tag === 'vault' || tag === 'land') return;
   const hit = probeObstacle(obstacles, character.root.position, character.yaw, 0.3);

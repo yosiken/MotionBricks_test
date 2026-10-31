@@ -13,6 +13,7 @@ const TURN_RATE = 6;       // rad/s
 
 export class ProceduralGenerator {
   name = '手続き的ダミー';
+  supportsVault = true;
 
   constructor() {
     // 自己回帰の「文脈」に相当する状態。最後に生成したフレームの続きから作る。

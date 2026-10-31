@@ -1,4 +1,5 @@
 models/*.onnx
+models/*.onnx.data
 models/*.vrm
 __pycache__/
 .DS_Store

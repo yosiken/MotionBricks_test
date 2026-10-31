@@ -3,9 +3,11 @@
 // ジェネレータのインターフェース:
 //   generator.name: string
 //   generator.generate(control) -> Promise<{ frames: Frame[], tokens?: number }>
-// Frame:
-//   { dForward, dYaw, height, tag?, bones: { [vrmBoneName]: [x, y, z, w] } }
-//   dForward / dYaw は 1 フレームあたりのルート移動量（キャラクターのローカル座標、+Z が前）。
+// Frame は次のどちらか:
+//   相対移動 { dForward, dYaw, height, tag?, bones: { [vrmBoneName]: [x, y, z, w] } }
+//     dForward / dYaw は 1 フレームあたりのルート移動量（キャラクターのローカル座標、+Z が前）。
+//   絶対座標 { root: { x, y, z, yaw }, tag?, bones }
+//     root は G1 スケールのメートル（y は骨盤の高さ）。表示時にキャラクターの体格へ拡大縮小する。
 //   ジェネレータは自分が最後に生成したフレームを文脈として次の区間を作る（自己回帰）。
 import * as THREE from 'three';
 
@@ -25,8 +27,8 @@ export class MotionPlayer {
 
   // 先読み中のフレームが進む距離（障害物までの距離補正に使う）
   get queuedForward() {
-    let d = this.queue.reduce((s, f) => s + f.dForward, 0);
-    if (this.cur) d += this.cur.dForward * (1 - this.acc * this.fps);
+    let d = this.queue.reduce((s, f) => s + (f.dForward ?? 0), 0);
+    if (this.cur) d += (this.cur.dForward ?? 0) * (1 - this.acc * this.fps);
     return d;
   }
 
@@ -53,16 +55,26 @@ export class MotionPlayer {
     }
     if (!this.cur) return;
 
-    // ルート移動（表示フレームレートに合わせて按分）
-    const k = Math.min(dt * this.fps, 3);
-    character.yaw += this.cur.dYaw * k;
-    const step = this.cur.dForward * k;
-    character.root.position.x += Math.sin(character.yaw) * step;
-    character.root.position.z += Math.cos(character.yaw) * step;
+    const t = Math.min(this.acc * this.fps, 1);
+    if (this.cur.root) {
+      // 絶対座標のフレーム（G1 プランナー）：G1 のメートルをキャラクターの体格に合わせて拡大縮小
+      const a = this.prev.root ?? this.cur.root, b = this.cur.root;
+      const s = character.g1Scale;
+      character.root.position.x = THREE.MathUtils.lerp(a.x, b.x, t) * s;
+      character.root.position.z = THREE.MathUtils.lerp(a.z, b.z, t) * s;
+      character.yaw = a.yaw + Math.atan2(Math.sin(b.yaw - a.yaw), Math.cos(b.yaw - a.yaw)) * t;
+      this.pose.height = THREE.MathUtils.lerp(a.y, b.y, t) * s - character.hipsHeight;
+    } else {
+      // 相対移動のフレーム（ダミー生成器）：表示フレームレートに合わせて按分
+      const k = Math.min(dt * this.fps, 3);
+      character.yaw += this.cur.dYaw * k;
+      const step = this.cur.dForward * k;
+      character.root.position.x += Math.sin(character.yaw) * step;
+      character.root.position.z += Math.cos(character.yaw) * step;
+      this.pose.height = THREE.MathUtils.lerp(this.prev.height, this.cur.height, t);
+    }
 
     // 前フレームとの補間で姿勢を作る
-    const t = Math.min(this.acc * this.fps, 1);
-    this.pose.height = THREE.MathUtils.lerp(this.prev.height, this.cur.height, t);
     for (const [name, q] of Object.entries(this.cur.bones)) {
       const out = (this.pose.bones[name] ??= new THREE.Quaternion());
       const a = this.prev.bones[name] ?? q;

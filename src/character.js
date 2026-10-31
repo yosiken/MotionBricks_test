@@ -4,10 +4,11 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { G1_PELVIS_HEIGHT } from './motion/g1.js';
 
 export const BONES = [
   'hips', 'spine', 'chest', 'neck', 'head',
-  'leftUpperArm', 'leftLowerArm', 'rightUpperArm', 'rightLowerArm',
+  'leftUpperArm', 'leftLowerArm', 'leftHand', 'rightUpperArm', 'rightLowerArm', 'rightHand',
   'leftUpperLeg', 'leftLowerLeg', 'leftFoot',
   'rightUpperLeg', 'rightLowerLeg', 'rightFoot',
 ];
@@ -21,7 +22,12 @@ export class Character {
     this.yaw = 0;
     this.bones = {};
     this.vrm = null;
+    this.hipsHeight = 0.95; // レストポーズでの腰の高さ（G1 の動きの拡大縮小に使う）
     this.useMannequin();
+  }
+
+  get g1Scale() {
+    return this.hipsHeight / G1_PELVIS_HEIGHT;
   }
 
   clearModel() {
@@ -38,6 +44,7 @@ export class Character {
     const { root, bones } = buildMannequin();
     this.body.add(root);
     this.bones = bones;
+    this.hipsHeight = 0.95;
   }
 
   async loadVRM(url) {
@@ -57,6 +64,9 @@ export class Character {
       const node = vrm.humanoid.getNormalizedBoneNode(name);
       if (node) this.bones[name] = node;
     }
+    vrm.scene.updateMatrixWorld(true);
+    const hips = vrm.humanoid.getNormalizedBoneNode('hips');
+    this.hipsHeight = hips ? hips.getWorldPosition(new THREE.Vector3()).y : 0.95;
   }
 
   // pose: { height, bones: { name: THREE.Quaternion } }
