@@ -23,10 +23,16 @@ export class MotionPlayer {
     this.busy = false;
     this.stats = { lastMs: 0, tokens: 0, count: 0, error: null };
     this.pose = { height: 0, bones: {} };
+    this.g1Scale = 1;
   }
 
   // 先読み中のフレームが進む距離（障害物までの距離補正に使う）
   get queuedForward() {
+    if (this.cur?.root) {
+      // 絶対座標のフレーム：今の位置からキューの末尾までの水平距離（ワールド単位）
+      const a = this.cur.root, b = this.queue.at(-1)?.root ?? a;
+      return Math.hypot(b.x - a.x, b.z - a.z) * this.g1Scale;
+    }
     let d = this.queue.reduce((s, f) => s + (f.dForward ?? 0), 0);
     if (this.cur) d += (this.cur.dForward ?? 0) * (1 - this.acc * this.fps);
     return d;
@@ -42,6 +48,7 @@ export class MotionPlayer {
 
   // getControl は生成を投げる瞬間に呼ばれる（その時点の入力が使われる）
   update(dt, getControl, character) {
+    this.g1Scale = character.g1Scale;
     if (!this.busy && this.queue.length < this.lookahead) this.request(getControl());
 
     const frameDt = 1 / this.fps;

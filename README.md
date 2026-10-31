@@ -2,8 +2,9 @@
 
 ブラウザでキー操作に合わせてモーションを生成し、VRM キャラクターを動かすデモの雛形です。
 
-- 最初は **手続き的なダミー生成器** で動きます（モデル不要）。
-- `?gen=planner` で、MotionBricks のプランナー（`planner_sonic.onnx`）を WebGPU で動かします。
+- 既定では **MotionBricks の SOMA（人体）モデル** を WebGPU で動かします。待機・歩き・走り・しゃがみ・飛び越えのすべてをモデルが生成します（[手順](#motionbricks-soma-を動かす手順)）。
+- `?gen=dummy` で、モデル不要の手続き的なダミー生成器で動きます。
+- `?gen=planner` で、GEAR-SONIC のプランナー（`planner_sonic.onnx`、G1 ロボット用）を動かします。
 - `?gen=g1test` で、モデル無しに「G1 ロボットの関節角 → VRM」の変換を確かめられます。
 
 MotionBricks の仕組みと調べた内容は [docs/motionbricks-notes.md](docs/motionbricks-notes.md) にまとめています。
@@ -33,7 +34,7 @@ http://localhost:8000 を開きます。
 | H | 表示を隠す |
 | マウスドラッグ | カメラ回転 |
 
-箱に向かって走ると、自動で飛び越えます（ダミー生成器のみ。MotionBricks の公開版に飛び越えは無いため）。
+箱に向かって走ると、自動で飛び越えます。SOMA では、公式のスマートプリミティブ（`jump_0_5m` / `jump_0_75m`）と同じく、箱を基準に「入口 → 踏み切り → 着地」の目標姿勢を置き、間をモデルが生成します。プランナー（G1）には飛び越えが無いので、踏み切りから着地までは G1 の関節角を手続き的に作って差し込みます（`plannerGenerator.js` の `vaultQpos`）。
 
 ## 構成
 
@@ -44,6 +45,9 @@ src/character.js                    VRM（正規化ボーン）／簡易マネ�
 src/input.js                        キー → カメラ基準の方向
 src/world.js                        床・障害物・レイキャスト
 src/motion/player.js                フレーム列の再生と先読み生成
+src/motion/soma.js                  MotionBricks SOMA の入出力（エンコード・デコード・端点補正）
+src/motion/somaGenerator.js         SOMA の再生・目標姿勢の配置・飛び越え・VRM への変換
+tools/build_soma_assets.py          公式サンプルモーションから目標姿勢を切り出す
 src/motion/proceduralGenerator.js   ダミー生成器
 src/motion/plannerGenerator.js      MotionBricks プランナー（ONNX / WebGPU）
 src/motion/g1.js                    G1 の qpos → VRM ボーンのリターゲット
@@ -62,6 +66,42 @@ generate(control) -> Promise<{ frames, tokens }>
 
 `MotionPlayer` は、再生待ちのフレームが `lookahead`（既定は 8 フレーム）を下回ると次の生成を投げます。
 生成器は、自分が最後に作ったフレームの続きとして次の区間を作ります。
+
+## MotionBricks SOMA を動かす手順
+
+1. 公式リポジトリ [NVlabs/motionbricks](https://github.com/NVlabs/motionbricks) を、このリポジトリの隣に clone し、必要なファイルを Git LFS で取得する。
+
+   ```bash
+   git clone https://github.com/NVlabs/motionbricks.git motionbricks_official
+   cd motionbricks_official
+   git lfs pull --include="motionbricks/assets/onnx/soma/mmm_v6_soma_fp16.onnx,assets/motions/soma/**,motionbricks/assets/human/**"
+   ```
+
+2. ONNX をこのリポジトリの `models/` にコピーし、目標姿勢を作る（`usd-core` は骨格の USD を読むのに使う）。
+
+   ```bash
+   copy motionbricks_official\motionbricks\assets\onnx\soma\mmm_v6_soma_fp16.onnx MotionBricks_test\models\
+   cd MotionBricks_test
+   pip install numpy usd-core
+   python tools/build_soma_assets.py --motionbricks ../motionbricks_official
+   ```
+
+3. `python -m http.server 8000` で起動し、http://localhost:8000/ を開く。
+
+- モデルは MotionBricks-SOMA-RP-v1（NVIDIA Open Model Agreement）、ランタイムの移植元のコードは Apache 2.0 です。
+- `models/soma_assets.json` はサンプルモーション（NVIDIA Sample Data Evaluation License、評価・テスト用）から作るので、Git には含めません（`.gitignore` 済み）。
+
+## Blender のキャラクターを使う
+
+VRM で書き出したものを、画面にドラッグ＆ドロップするか `?vrm=./models/ファイル名.vrm` で読み込みます。T ポーズ・正面 -Y・実寸（1 単位 = 1m）で作り、[VRM Add-on for Blender](https://vrm-addon-for-blender.info) でヒューマノイドのボーンを割り当てて書き出してください。
+
+Tripo で自動リグを付けたもの（`bone_0`〜`bone_51`）は、次のコマンドでボーンの割り当てと T ポーズ化をして書き出せます（元の `.blend` は保存しません）。
+
+```bash
+blender -b キャラクター.blend --python tools/tripo_blend_to_vrm.py -- models/キャラクター.vrm
+```
+
+カメラと飛び越えの判定はキャラクターの腰の高さに合わせて変わります。小柄なキャラクターほど、飛び越えられる箱は低くなります（人間の寸法で 0.95m まで）。
 
 ## MotionBricks のプランナーを動かす手順
 

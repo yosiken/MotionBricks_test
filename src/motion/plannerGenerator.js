@@ -26,6 +26,7 @@ const NEEDED_STORAGE_BUFFERS = 10;
 
 export class PlannerGenerator {
   name = 'MotionBricks planner (ONNX / WebGPU)';
+  supportsVault = true; // 飛び越えはモデルに無いので、G1 の qpos を手続き的に作って差し込む
 
   // dataUrl: 重みが外部ファイル（planner_sonic.onnx.data など）に分かれている場合だけ指定する
   constructor({ modelUrl = './models/planner_sonic.onnx', dataUrl = null, take = 10 } = {}) {
@@ -82,8 +83,8 @@ export class PlannerGenerator {
     } else if (control.moving) {
       mode = control.speed >= 2 ? MODE.run : MODE.walk;
     }
-    // TODO: 公開されている mode に「飛び越え」は無い。specific_target_* で障害物の向こうを
-    //       目標にする方法は未検証なので、今は vault を無視する。
+    // 公開されている mode に「飛び越え」は無いので、vault のときは助走だけプランナーに作らせ、
+    // 踏み切り以降は vaultQpos() で G1 の qpos を直接作る（着地の末尾 4 フレームが次の文脈になる）。
 
     const ctx = new Float32Array(4 * 36);
     this.context.forEach((q, i) => ctx.set(q, i * 36));
@@ -109,14 +110,105 @@ export class PlannerGenerator {
     const qpos = out.mujoco_qpos.data;
     const numFrames = Number(out.num_pred_frames.data[0]);
 
+    let end = Math.min(numFrames, 4 + this.take);
+    let vault = null;
+    if (control.vault) {
+      // 障害物の大きさはワールド単位なので G1 のメートルに直す
+      const s = control.g1Scale ?? 1;
+      const v = { yaw: control.vault.yaw, height: control.vault.height / s, depth: control.vault.depth / s };
+      const takeoff = control.vault.dist / s - TAKEOFF;
+      const dx = Math.cos(v.yaw), dy = Math.sin(v.yaw);
+      // 助走：プランナーの出力のうち、踏み切り位置に届くまでのフレームを使う
+      for (let f = 4; f < numFrames; f++) {
+        const progress = (qpos[f * 36] - last[0]) * dx + (qpos[f * 36 + 1] - last[1]) * dy;
+        if (progress >= takeoff) { end = f; vault = v; break; }
+      }
+    }
+
     const frames = [];
-    const end = Math.min(numFrames, 4 + this.take);
     for (let f = 4; f < end; f++) {
       const q = qpos.slice(f * 36, (f + 1) * 36);
       frames.push({ ...qposToFrame(q), qpos: q });
+    }
+    if (vault) {
+      const base = frames.at(-1)?.qpos ?? last;
+      for (const { q, tag } of vaultQpos(base, vault)) frames.push({ ...qposToFrame(q), qpos: q, tag });
     }
     // 次の文脈 = 今回キューに足した末尾 4 フレーム
     this.context = frames.slice(-4).map((f) => f.qpos);
     return { frames, tokens: numFrames / 4 };
   }
+}
+
+// ---- 飛び越え（G1 の qpos を直接作る） ----
+const TAKEOFF = 0.45; // 障害物の手前何 m で踏み切るか（G1 のメートル）
+
+// 空中で畳む姿勢（関節インデックス → 角度）。G1 は股関節ピッチが負で脚が前、膝は正で曲がる。
+const TUCK = {
+  0: -1.4, 3: 2.0, 4: -0.4,   // 左脚（前に抱える）
+  6: -1.1, 9: 1.7, 10: -0.3,  // 右脚
+  14: 0.3,                    // 上体を前に倒す
+  15: -0.9, 22: -0.9,         // 腕を前に出す
+};
+// 着地で沈み込む量（最大値）
+const LAND = { 0: -0.5, 3: 0.9, 4: -0.4, 6: -0.5, 9: 0.9, 10: -0.4, 14: 0.15 };
+
+// base（踏み切りの qpos）から、放物線で障害物を越えて着地するまでのフレーム列を作る
+function vaultQpos(base, { yaw, height, depth }) {
+  const out = [];
+  const dx = Math.cos(yaw), dy = Math.sin(yaw);
+  const z0 = base[2];
+  const air = TAKEOFF + depth + 0.6;           // 踏み切りから着地までの水平距離
+  const n = Math.round((0.45 + 0.35 * height + 0.1 * depth) * 30);
+  const peak = Math.max(z0 + 0.1, height + 0.45); // 脚を畳めば、足先は骨盤の約 0.35m 下
+  const jumpQuat = new Float32Array(4);
+
+  for (let i = 1; i <= n; i++) {
+    const t = i / n;
+    const arc = Math.sin(Math.PI * t);
+    const q = base.slice();
+    q[0] = base[0] + dx * air * t;
+    q[1] = base[1] + dy * air * t;
+    q[2] = z0 + (peak - z0) * arc;
+    // 向きは踏み切りの yaw に揃え、空中では少し前傾する
+    yawPitchQuat(yaw, 0.25 * arc, jumpQuat);
+    nlerpQuat(base, 3, jumpQuat, Math.min(1, arc * 3), q);
+    const w = Math.pow(arc, 0.7);
+    for (const [j, a] of Object.entries(TUCK)) q[7 + +j] = base[7 + +j] * (1 - w) + a * w;
+    out.push({ q, tag: 'vault' });
+  }
+
+  // 着地：前に進みながら膝を曲げて沈み込み、元の姿勢に戻る
+  const landEnd = out.at(-1).q;
+  const step = (air / n) * 0.6;
+  for (let i = 1; i <= 8; i++) {
+    const k = Math.sin((Math.PI * i) / 9);
+    const q = landEnd.slice();
+    q[0] = landEnd[0] + dx * step * i;
+    q[1] = landEnd[1] + dy * step * i;
+    q[2] = z0 - 0.12 * k;
+    for (const [j, a] of Object.entries(LAND)) q[7 + +j] = base[7 + +j] + a * k;
+    out.push({ q, tag: 'land' });
+  }
+  return out;
+}
+
+// MuJoCo の (w, x, y, z)：Z 軸まわりに yaw、そのあと機体の Y 軸まわりに pitch（正で前傾）
+function yawPitchQuat(yaw, pitch, out) {
+  const cy = Math.cos(yaw / 2), sy = Math.sin(yaw / 2);
+  const cp = Math.cos(pitch / 2), sp = Math.sin(pitch / 2);
+  out[0] = cy * cp; out[1] = -sy * sp; out[2] = cy * sp; out[3] = sy * cp;
+  return out;
+}
+
+// q[off..off+4] と b を t で補間して q に書き込む（正規化つき線形補間）
+function nlerpQuat(a, off, b, t, q) {
+  const sign = a[off] * b[0] + a[off + 1] * b[1] + a[off + 2] * b[2] + a[off + 3] * b[3] < 0 ? -1 : 1;
+  let len = 0;
+  for (let i = 0; i < 4; i++) {
+    q[off + i] = a[off + i] * (1 - t) + sign * b[i] * t;
+    len += q[off + i] ** 2;
+  }
+  len = Math.sqrt(len);
+  for (let i = 0; i < 4; i++) q[off + i] /= len;
 }

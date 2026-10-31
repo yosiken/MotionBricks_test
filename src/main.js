@@ -5,8 +5,9 @@ import { createWorld, probeObstacle } from './world.js';
 import { MotionPlayer } from './motion/player.js';
 import { ProceduralGenerator } from './motion/proceduralGenerator.js';
 
-// ?gen=planner で MotionBricks プランナー（ONNX/WebGPU）、?gen=g1test で G1 リターゲットのテスト、
-// ?model=URL でプランナーの ONNX、?modelData=URL でその外部重みファイル、?vrm=URL で VRM を指定する
+// 既定は MotionBricks の SOMA モデル（models/mmm_v6_soma_fp16.onnx と models/soma_assets.json）。
+// ?gen=dummy で手続き的ダミー、?gen=planner で GEAR-SONIC のプランナー（G1）、?gen=g1test で G1 リターゲットのテスト、
+// ?model=URL で ONNX、?modelData=URL でその外部重みファイル、?vrm=URL で VRM を指定する
 // ?ep=webgpu|wasm で推論の実行先を固定する（省略時は WebGPU が無ければ WASM）
 const params = new URLSearchParams(location.search);
 
@@ -29,8 +30,19 @@ input.onToggleHud = () => hud.classList.toggle('hidden');
 
 // ---- 生成器 ----
 let generator = new ProceduralGenerator();
-const gen = params.get('gen');
-if (gen === 'planner' || gen === 'onnx') {
+const gen = params.get('gen') ?? 'soma';
+if (gen === 'soma') {
+  try {
+    const { SomaGenerator } = await import('./motion/somaGenerator.js');
+    statEl.textContent = 'MotionBricks（SOMA）を読み込み中…';
+    const g = new SomaGenerator(params.get('model') ? { modelUrl: params.get('model') } : {});
+    await g.init(params.get('ep'));
+    generator = g;
+  } catch (e) {
+    console.error(e);
+    alert(`MotionBricks の初期化に失敗したので、ダミーで起動します: ${e.message}`);
+  }
+} else if (gen === 'planner' || gen === 'onnx') {
   try {
     const { PlannerGenerator } = await import('./motion/plannerGenerator.js');
     statEl.textContent = 'プランナーの ONNX を読み込み中…';
@@ -49,6 +61,7 @@ if (gen === 'planner' || gen === 'onnx') {
   generator = new G1TestGenerator();
 }
 const player = new MotionPlayer(generator);
+window.demo = { generator, character, player }; // コンソールから状態を見る用
 
 // ---- VRM 読み込み ----
 async function loadVRM(url) {
@@ -83,8 +96,10 @@ addEventListener('pointermove', (e) => {
 const camTarget = new THREE.Vector3();
 function updateCamera(dt) {
   const p = character.root.position;
-  camTarget.lerp(_v.set(p.x, 1.1, p.z), 1 - Math.exp(-dt * 8));
-  const dist = 4.5;
+  // 注視点と距離はキャラクターの体格（腰の高さ）に合わせる。マネキン（0.95m）で高さ 1.1m・距離 4.5m
+  const size = character.hipsHeight / 0.95;
+  camTarget.lerp(_v.set(p.x, 1.1 * size, p.z), 1 - Math.exp(-dt * 8));
+  const dist = 4.5 * size;
   camera.position.set(
     camTarget.x - Math.sin(camYaw) * Math.cos(camPitch) * dist,
     camTarget.y + Math.sin(camPitch) * dist,
@@ -109,16 +124,24 @@ function getControl() {
     const hit = probeObstacle(obstacles, character.root.position, character.yaw);
     if (hit) {
       const dist = hit.dist - player.queuedForward;
-      if (dist > 0.2 && dist < 1.6 && hit.height < 1.2) vault = { ...hit, dist };
+      if (dist > 0.2 && dist < 1.6 && hit.height < 1.2) vault = { ...hit, dist, yaw: character.yaw };
     }
   }
   modeLabel = vault ? '飛び越え' : input.crouch ? (moving ? 'しゃがみ歩き' : 'しゃがみ')
     : moving ? (input.walk ? '歩き' : 'ダッシュ') : '待機';
-  return { moving, yaw, turn, speed, crouch: input.crouch, vault };
+  return { moving, yaw, turn, speed, crouch: input.crouch, vault, g1Scale: character.g1Scale };
 }
 
 function wrapAngle(a) {
   return Math.atan2(Math.sin(a), Math.cos(a));
+}
+
+// SOMA 用：進む向きの先に飛び越えられる箱があれば、その距離・高さ・奥行き（ワールド単位）を返す
+function probeForSoma(here, control) {
+  if (Math.abs(wrapAngle(control.yaw - character.yaw)) > 0.5) return null;
+  const hit = probeObstacle(obstacles, character.root.position, control.yaw);
+  if (!hit || hit.dist < 0.9 || hit.dist > 2.6 || hit.height > 1.2) return null;
+  return { ...hit, yaw: control.yaw };
 }
 
 // 飛び越えずに障害物へめり込むのを防ぐ（簡易）
@@ -137,16 +160,20 @@ const clock = new THREE.Clock();
 let hudTimer = 0;
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
-  player.update(dt, getControl, character);
-  resolveCollision();
+  if (generator.drivesCharacter) {
+    generator.update(dt, getControl(), character, probeForSoma);
+  } else {
+    player.update(dt, getControl, character);
+    resolveCollision();
+  }
   character.update(dt);
   updateCamera(dt);
   renderer.render(scene, camera);
 
   if ((hudTimer += dt) > 0.15) {
     hudTimer = 0;
-    const s = player.stats;
-    const tag = player.currentTag === 'vault' ? '飛び越え' : modeLabel;
+    const s = generator.drivesCharacter ? generator.stats : player.stats;
+    const tag = generator.drivesCharacter ? generator.label : player.currentTag === 'vault' ? '飛び越え' : modeLabel;
     statEl.textContent = s.error
       ? `生成エラー: ${s.error}`
       : `今：${tag}　生成 ${s.lastMs.toFixed(0)} ms（${s.tokens}トークン）　回数 ${s.count}　[${generator.name}]`;
