@@ -10,8 +10,8 @@
 //   出力の先頭 4 フレームは文脈と同じ位置（ブレンド済み）なので、5 フレーム目以降を使う。
 import { qposToFrame, standingQpos } from './g1.js';
 
-const ORT_URL = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.mjs';
-const ORT_WASM = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+const ORT_URL = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.min.mjs';
+const ORT_WASM = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/';
 
 // planner_sonic の mode 番号（docs/source/references/planner_onnx.md）
 export const MODE = {
@@ -22,6 +22,7 @@ export const MODE = {
 };
 
 const MIN_TOKENS = 6, MAX_TOKENS = 16;
+const NEEDED_STORAGE_BUFFERS = 10;
 
 export class PlannerGenerator {
   name = 'MotionBricks planner (ONNX / WebGPU)';
@@ -34,12 +35,27 @@ export class PlannerGenerator {
     this.context = Array.from({ length: 4 }, () => standingQpos());
   }
 
-  async init() {
-    if (!navigator.gpu) throw new Error('このブラウザは WebGPU に対応していません');
+  // ep: 'webgpu' | 'wasm'。省略時は WebGPU があれば webgpu、無ければ wasm（CPU、遅い）
+  async init(ep = null) {
+    const adapter = ep !== 'wasm' && (await navigator.gpu?.requestAdapter());
+    // このモデルには入力 9 個の Concat・出力 9 個の Split があり、1 シェーダで 10 個のストレージバッファを使う。
+    // WebGPU の既定上限は 8 なので、アダプタが許す上限まで引き上げたデバイスを onnxruntime に渡す。
+    if (adapter && adapter.limits.maxStorageBuffersPerShaderStage < NEEDED_STORAGE_BUFFERS) {
+      console.warn(`GPU のストレージバッファ上限が ${adapter.limits.maxStorageBuffersPerShaderStage} しかないので WASM で動かします`);
+    }
+    ep ??= adapter && adapter.limits.maxStorageBuffersPerShaderStage >= NEEDED_STORAGE_BUFFERS ? 'webgpu' : 'wasm';
+    if (ep === 'wasm') this.name = 'MotionBricks planner (ONNX / WASM・CPU)';
     this.ort = await import(ORT_URL);
     this.ort.env.wasm.wasmPaths = ORT_WASM;
+    if (ep === 'webgpu') {
+      if (!adapter) throw new Error('このブラウザは WebGPU に対応していません');
+      const requiredLimits = {};
+      for (const k in adapter.limits) if (typeof adapter.limits[k] === 'number') requiredLimits[k] = adapter.limits[k];
+      const requiredFeatures = ['shader-f16', 'timestamp-query', 'subgroups'].filter((f) => adapter.features.has(f));
+      this.ort.env.webgpu.device = await adapter.requestDevice({ requiredLimits, requiredFeatures });
+    }
     this.session = await this.ort.InferenceSession.create(this.modelUrl, {
-      executionProviders: ['webgpu'],
+      executionProviders: [ep],
       graphOptimizationLevel: 'all',
       ...(this.dataUrl && {
         externalData: [{ path: this.dataUrl.split('/').pop().split('?')[0], data: this.dataUrl }],

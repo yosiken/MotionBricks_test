@@ -57,5 +57,11 @@ GEAR-SONIC は、上記の全部（正規化・ばねモデル・クリップ選
 ## 未対応・未確認
 
 - **飛び越え**：公開されている mode に jump / vault はありません。プロジェクトページの「ベンチを飛び越える」は smart object で、配布物には含まれていません。`specific_target_positions` で障害物の向こうを目標にする方法は試していません。
-- **ファイルサイズ**：pose model だけで約 2 億パラメータあります。planner_sonic.onnx のサイズと、外部データファイル（`.onnx.data`）に分かれているかは未確認です。WebGPU のバッファ上限に当たる可能性があります。
+- **ファイルサイズ**：planner_sonic.onnx（target_vel/V2）は外部データ無しの単一ファイルで 774MB、約 1.85 億パラメータ（fp32）、opset 17 です。最大のテンソルは 12MB なので、WebGPU のバッファ上限には当たりません。
+
+## ブラウザで動かしたときの注意（2026-10-31 に確認）
+
+- **ストレージバッファの上限**：このモデルには入力 9 個の Concat（11 個）と出力 9 個の Split（3 個）があり、1 つのシェーダで 10 個のストレージバッファを使います。WebGPU の既定上限は 8 なので、onnxruntime-web にそのまま渡すと `Invalid ComputePipeline "Concat"` が大量に出て、出力が壊れます（待機なのに 6 トークンになる）。onnxruntime-web 1.30.0 でも同じでした。`plannerGenerator.js` では、アダプタの上限まで引き上げた GPUDevice を `ort.env.webgpu.device` に渡して回避しています。上限が 10 未満の GPU では WASM（CPU）で動かします。
+- **速度**（RTX 系 Ampere、Edge ベースのブラウザ）：WebGPU で 1 回 約 210〜240ms、WASM（シングルスレッド）で約 250ms、ネイティブの onnxruntime（CPU）で約 60ms。どれも 330ms（10 フレーム分）を下回ります。初回はシェーダのコンパイルで数十秒かかります。
+- **出力の確認**：ネイティブの onnxruntime で同じ入力を流し、待機 16 トークン、歩き 約 1.1m/s、走り 約 2.2m/s、方向転換・しゃがみ（高さ 0.55m）が指示どおりになることと、区間の継ぎ目の関節差がフレーム間の差と同程度（約 0.25rad）で飛びが無いことを確かめました。出力の先頭 4 フレームは文脈とほぼ同じ（最大差 0.05）です。
 - **ライセンス**：重みは NVIDIA Open Model License です。public リポジトリに ONNX を置かないでください（`.gitignore` 済み）。

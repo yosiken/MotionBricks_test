@@ -7,6 +7,7 @@ import { ProceduralGenerator } from './motion/proceduralGenerator.js';
 
 // ?gen=planner で MotionBricks プランナー（ONNX/WebGPU）、?gen=g1test で G1 リターゲットのテスト、
 // ?model=URL でプランナーの ONNX、?modelData=URL でその外部重みファイル、?vrm=URL で VRM を指定する
+// ?ep=webgpu|wasm で推論の実行先を固定する（省略時は WebGPU が無ければ WASM）
 const params = new URLSearchParams(location.search);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -37,7 +38,7 @@ if (gen === 'planner' || gen === 'onnx') {
       modelUrl: params.get('model') ?? './models/planner_sonic.onnx',
       dataUrl: params.get('modelData'),
     });
-    await g.init();
+    await g.init(params.get('ep'));
     generator = g;
   } catch (e) {
     console.error(e);

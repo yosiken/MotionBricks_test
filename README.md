@@ -20,6 +20,7 @@ http://localhost:8000 を開きます。
 - `.vrm` ファイルを画面にドラッグ＆ドロップすると、マネキンが VRM に差し替わります。
 - `?vrm=./models/your.vrm` を付けると、起動時に VRM を読み込みます。
 - `?gen=planner` を付けると、`models/planner_sonic.onnx` を WebGPU で読み込みます（`?model=URL` で場所を変更可）。
+  WebGPU が使えないときは WASM（CPU）で動かします。`&ep=wasm` / `&ep=webgpu` で固定できます。
 - `?gen=g1test` を付けると、数式で作った G1 の関節角をリターゲットして表示します。
 
 ## 操作
@@ -77,6 +78,7 @@ generate(control) -> Promise<{ frames, tokens }>
    `.onnx.data` などの外部重みファイルが一緒にあれば、それもコピーし、URL に `&modelData=./models/<ファイル名>` を付ける。
 3. `python3 -m http.server 8000` で起動し、http://localhost:8000/?gen=planner を開く。WebGPU 対応ブラウザ（Chrome / Edge）が必要です。
 4. コンソールに入出力名が表示されます。読み込みや推論で失敗した場合は、ダミー生成器で起動します。
+   初回はシェーダのコンパイルで数十秒かかります。コードを更新したあとは Ctrl+F5 で再読み込みしてください（`http.server` はキャッシュを止めないので、古い JS が残ることがあります）。
 
 うまく動かない場合は、まず `?gen=g1test` でリターゲットが正しく見えるかを確認してください。
 
