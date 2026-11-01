@@ -141,7 +141,7 @@ let modeLabel = '待機';
 function getControl() {
   const yaw = input.moveYaw(camYaw);
   const moving = yaw !== null;
-  const speed = moving ? (input.walk ? 1 : 2) : 0;
+  const speed = moving ? (input.run ? 2 : 1) : 0; // 基本は歩き、Shift でダッシュ
   const turn = moving ? wrapAngle(yaw - character.yaw) : 0;
 
   let vault = null;
@@ -153,7 +153,7 @@ function getControl() {
     }
   }
   modeLabel = vault ? '飛び越え' : input.crouch ? (moving ? 'しゃがみ歩き' : 'しゃがみ')
-    : moving ? (input.walk ? '歩き' : 'ダッシュ') : '待機';
+    : moving ? (input.run ? 'ダッシュ' : '歩き') : '待機';
   return {
     moving, yaw, turn, speed, crouch: input.crouch, vault, g1Scale: character.g1Scale,
     style: STYLES[input.style][0], styleName: STYLES[input.style][1],

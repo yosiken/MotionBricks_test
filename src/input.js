@@ -38,7 +38,7 @@ export class Input {
     return v;
   }
 
-  get walk() {
+  get run() {
     return this.down.has('ShiftLeft') || this.down.has('ShiftRight');
   }
 
