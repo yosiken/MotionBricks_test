@@ -23,6 +23,7 @@ const TURN_THRESHOLD = 15;     // 向きがこれ以上変わったら作り直�
 const BLEND_SECONDS = 0.2;     // 新しい動きへのつなぎ
 const HISTORY = 32;
 const MAX_JUMP_HEIGHT = 0.95;  // 飛び越える箱の高さの上限（SOMA の人体の寸法、メートル）
+const BLOCKED_DISTANCE = 0.6;  // 進む向きの壁・家具がこれより近ければ進まない（ワールドのメートル）
 
 // VRM の正規化ボーン ← SOMA の関節
 const VRM_MAP = [
@@ -60,6 +61,10 @@ export class SomaGenerator {
     };
     for (const t of [...Object.values(this.targets).flat(), ...Object.values(this.styles)]) t.speed = targetSpeed(t.poses);
     this.restHips = tget(this.sk.reference, 0).p[1];
+    if (this.sit) {
+      this.seatHeight = assets.sit.seat.height;
+      this.seatedHips = tget(this.sit.seated.poses[0], 0).p[1];
+    }
     this.restInv = this.sk.world(this.sk.reference).map((t) => qinv(t.q));
     this.vrmMap = VRM_MAP.map(([bone, joint]) => [bone, this.sk.index(joint)]);
 
@@ -91,7 +96,8 @@ export class SomaGenerator {
     this.queued = null;           // 乗り換え待ちの生成結果 { frames, at, early }
     this.plan = null;             // 今の目標 { kind, dir, ... }
     this.seq = null;              // 目標列の再生中（飛び越え・座る・立つ）{ steps, index, ground, yaw, then }
-    this.seated = null;           // 座っている椅子 { ground, yaw }
+    this.seated = null;           // 座っている椅子 { ground, yaw, raise }
+    this.offset = { x: 0, z: 0 }; // 表示位置 = SOMA の位置 × scale + offset（瞬間移動と壁の押し戻しの分）
     this.wantInteract = false;    // E が押された（生成中でも取りこぼさない）
     this.pose = start;
     this.clock = 0;               // 実時間（秒）
@@ -145,7 +151,7 @@ export class SomaGenerator {
       if (this.seq.index < this.seq.steps.length) return this.request(this.seqTarget(), at);
       const then = this.seq.then;
       this.seq = null;
-      if (then === 'seated') this.seated = { ground: this.seqGround, yaw: this.seqYaw };
+      if (then === 'seated') this.seated = { ground: this.seqGround, yaw: this.seqYaw, raise: this.seqRaise };
     }
 
     // 椅子：座っている間は着座の姿勢を目標にし続け、E か移動で立ち上がる
@@ -153,18 +159,21 @@ export class SomaGenerator {
     this.wantInteract = false;
     if (this.seated) {
       if (interact || control.moving) {
-        const { ground, yaw } = this.seated;
+        const { ground, yaw, raise } = this.seated;
         this.seated = null;
-        return this.startSequence(this.sit.stand, ground, yaw, '立ち上がり', null);
+        return this.startSequence(this.sit.stand, ground, yaw, '立ち上がり', null, 0, raise);
       }
       if (!due) return;
       this.label = '座っている';
       const t = this.sit.seated;
-      return this.request({ poses: placePoses(t.poses, this.seated.ground, this.seated.yaw), early: t.early, tokens: t.tokens }, at);
+      const { ground, yaw, raise } = this.seated;
+      return this.request({ poses: this.raiseSeat(placePoses(t.poses, ground, yaw), raise), early: t.early, tokens: t.tokens }, at);
     }
     if (interact && control.chair && this.sit) {
-      const ground = [control.chair.pos[0] / this.scale, 0, control.chair.pos[2] / this.scale];
-      return this.startSequence(this.sit.sit, ground, control.chair.yaw, '座る', 'seated');
+      const { pos, yaw, seat } = control.chair;
+      const ground = [(pos[0] - this.offset.x) / this.scale, 0, (pos[2] - this.offset.z) / this.scale];
+      const raise = seat ? seat / this.scale - this.seatHeight : 0;
+      return this.startSequence(this.sit.sit, ground, yaw, '座る', 'seated', 0, raise);
     }
 
     // 障害物：走って近づいたら、箱を基準にした飛び越えの目標列を置く
@@ -173,10 +182,13 @@ export class SomaGenerator {
       if (hit && this.startJump(hit, here)) return;
     }
 
-    const style = control.moving && !control.crouch && this.styles[control.style] ? control.style : null;
-    const kind = style ? `style:${style}` : control.crouch ? (control.moving ? 'crouchWalk' : 'crouchIdle')
-      : control.moving ? (control.speed >= 2 ? 'run' : 'walk') : 'idle';
-    const turned = control.moving && this.plan?.dir != null
+    // 壁や家具が目の前なら、進まずにその方を向いて待機する
+    const free = control.moving && control.free ? control.free(control.yaw) : Infinity;
+    const moving = control.moving && free > BLOCKED_DISTANCE;
+    const style = moving && !control.crouch && this.styles[control.style] ? control.style : null;
+    const kind = style ? `style:${style}` : control.crouch ? (moving ? 'crouchWalk' : 'crouchIdle')
+      : moving ? (control.speed >= 2 ? 'run' : 'walk') : 'idle';
+    const turned = moving && this.plan?.dir != null
       && Math.abs(wrap(control.yaw - this.plan.dir)) > (TURN_THRESHOLD * Math.PI) / 180;
     const sameKind = this.plan?.kind === kind && !turned;
     if (!due && sameKind) return;
@@ -184,9 +196,10 @@ export class SomaGenerator {
     const list = style ? [this.styles[style]] : this.targets[kind];
     const target = list[(Math.random() * list.length) | 0];
     const yaw = control.moving ? control.yaw : here.heading;
-    const lead = control.moving ? target.speed * LEAD_SECONDS : 0;
+    // 目標は 1 秒先。その手前に壁があれば、壁の手前まで
+    const lead = moving ? Math.min(target.speed * LEAD_SECONDS, (free - BLOCKED_DISTANCE / 2) / this.scale) : 0;
     const ground = [here.pos[0] + Math.sin(yaw) * lead, 0, here.pos[2] + Math.cos(yaw) * lead];
-    this.plan = { kind, dir: control.moving ? control.yaw : null };
+    this.plan = { kind, dir: moving ? control.yaw : null };
     this.label = style ? control.styleName
       : { idle: '待機', walk: '歩き', run: 'ダッシュ', crouchIdle: 'しゃがみ', crouchWalk: 'しゃがみ歩き' }[kind];
     this.request({ poses: placePoses(target.poses, ground, yaw), early: target.early, tokens: target.tokens }, sameKind ? at : null);
@@ -209,10 +222,12 @@ export class SomaGenerator {
   }
 
   // ground / yaw（SOMA の空間）を原点・正面として目標列を置き、1 段目から生成する
-  startSequence(steps, ground, yaw, label, then, index = 0) {
-    this.seq = { steps, index, ground, yaw, then };
+  // raise：椅子の座面が sit の座面より高い分（SOMA の空間）
+  startSequence(steps, ground, yaw, label, then, index = 0, raise = 0) {
+    this.seq = { steps, index, ground, yaw, then, raise };
     this.seqGround = ground;
     this.seqYaw = yaw;
+    this.seqRaise = raise;
     this.plan = null;
     this.label = label;
     this.request(this.seqTarget());
@@ -220,7 +235,26 @@ export class SomaGenerator {
 
   seqTarget() {
     const s = this.seq.steps[this.seq.index];
-    return { poses: placePoses(s.poses, this.seq.ground, this.seq.yaw), early: s.early, tokens: s.tokens };
+    return { poses: this.raiseSeat(placePoses(s.poses, this.seq.ground, this.seq.yaw), this.seq.raise), early: s.early, tokens: s.tokens };
+  }
+
+  // 座面の高さの違い：腰が下がった姿勢ほど持ち上げる（立った姿勢はそのまま、座った姿勢は raise だけ）
+  raiseSeat(poses, raise) {
+    if (!raise) return poses;
+    const top = this.restHips, bottom = this.seatedHips;
+    for (const p of poses) p[1] += raise * Math.min(1, Math.max(0, (top - p[1]) / (top - bottom)));
+    return poses;
+  }
+
+  // ワールドの位置 (x, z)・向き yaw へ瞬間移動して待機させる
+  teleport(x, z, yaw) {
+    const base = this.targets.idle[0].poses[3];
+    const p = placePoses([base], [0, 0, 0], yaw - this.sk.heading(this.sk.world(base)))[0];
+    p[0] = p[2] = 0;
+    Object.assign(this, {
+      history: this.history.map(() => p), frames: [p], pose: p, fade: null, queued: null, time: 0,
+      seq: null, seated: null, plan: null, offset: { x, z },
+    });
   }
 
   // ---------- 生成 ----------
@@ -282,8 +316,8 @@ export class SomaGenerator {
     const rots = {};
     for (const [bone, j] of this.vrmMap) rots[bone] = qmul(yawInv, qmul(world[j].q, this.restInv[j]));
 
-    character.root.position.x = world[0].p[0] * s;
-    character.root.position.z = world[0].p[2] * s;
+    character.root.position.x = world[0].p[0] * s + this.offset.x;
+    character.root.position.z = world[0].p[2] * s + this.offset.z;
     character.yaw = yaw;
     character.applyWorldPose(world[0].p[1] * s - character.hipsHeight, rots);
   }

@@ -1,5 +1,5 @@
 // ブラウザのコンソールで読み込む計測用の道具（ペインが隠れていても動くよう、描画ループを止めて 1/30 秒刻みで進める）。
-//   const h = await import('/tools/sim_harness.js'); await h.setup();
+//   （?scene=boxes で開いてから）const h = await import('/tools/sim_harness.js'); await h.setup();
 //   await h.jump(0)   // 0 番の箱へ走って飛び越え、箱の範囲内での最小すき間を返す
 //   await h.sit()     // 一番近い椅子に座って立つ
 // 推論中も、前回の推論時間ぶんだけフレームを進める（実時間で動かしたときと同じ遅れ）。
@@ -46,12 +46,7 @@ export async function sim(seconds, control = {}, each) {
 export async function place(x, z, yaw) {
   if (pending) { await pending; pending = null; }
   g.scale = ch.hipsHeight / g.restHips; // 描画ループが一度も回っていないと未設定
-  const s = g.scale, p = Float32Array.from(g.targets.idle[0].poses[3]);
-  const h = g.sk.heading(g.sk.world(p)), d = (yaw - h) / 2, c = Math.cos(d), sn = Math.sin(d);
-  const [x0, y0, z0, w0] = p.slice(3, 7);
-  p.set([c * x0 + sn * z0, c * y0 + sn * w0, c * z0 - sn * x0, c * w0 - sn * y0], 3);
-  p[0] = x / s; p[2] = z / s;
-  Object.assign(g, { history: g.history.map(() => p), frames: [p], fade: null, queued: null, time: 0, seq: null, seated: null, plan: null });
+  g.teleport(x, z, yaw);
   await sim(0.6);
 }
 

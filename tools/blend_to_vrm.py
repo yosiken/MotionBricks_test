@@ -8,6 +8,7 @@
 
 使い方（VRM Add-on for Blender を入れた Blender で）:
     blender -b キャラクター.blend --python tools/blend_to_vrm.py -- models/キャラクター.vrm [作者名]
+    blender -b --python tools/blend_to_vrm.py -- キャラクター.fbx models/キャラクター.vrm [作者名]   （FBX を直接）
 """
 
 import sys
@@ -16,6 +17,10 @@ import bpy
 from mathutils import Matrix, Vector
 
 args = sys.argv[sys.argv.index('--') + 1:]
+if args[0].lower().endswith('.fbx'):
+    for o in list(bpy.data.objects):  # 起動時のシーン（立方体など）。read_factory_settings はアドオンまで外すので使わない
+        bpy.data.objects.remove(o)
+    bpy.ops.import_scene.fbx(filepath=args.pop(0))
 out = args[0]
 author = args[1] if len(args) > 1 else ''
 

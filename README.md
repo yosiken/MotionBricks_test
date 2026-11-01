@@ -3,6 +3,7 @@
 ブラウザでキー操作に合わせてモーションを生成し、VRM キャラクターを動かすデモの雛形です。
 
 - 既定では **MotionBricks の SOMA（人体）モデル** を WebGPU で動かします。待機・歩き・走り・しゃがみ・飛び越え・歩き方のスタイル・椅子に座るのすべてをモデルが生成します（[手順](#motionbricks-soma-を動かす手順)）。
+- 既定のシーンはオフィス（別リポジトリ `3d_office_scene` のアセット）で、キャラクターはスタッフ（`office_lady`）です（[手順](#オフィスのシーン)）。`?scene=boxes` で箱と椅子だけのシーンになります。
 - `?gen=dummy` で、モデル不要の手続き的なダミー生成器で動きます。
 - `?gen=planner` で、GEAR-SONIC のプランナー（`planner_sonic.onnx`、G1 ロボット用）を動かします。
 - `?gen=g1test` で、モデル無しに「G1 ロボットの関節角 → VRM」の変換を確かめられます。
@@ -41,6 +42,22 @@ http://localhost:8000 を開きます。
 - 歩き方のスタイルは `locomotion_style_variations_bs1_linear` と同じ目標姿勢を、歩きと同じく 1 秒先に置きます。
 - 椅子は `sit` と同じく「座る手前 → 着座」で座り、座っている間は着座の姿勢を目標にし続け（公式は座りのループを再生）、「立ち上がり」で立ちます。椅子の座面は 0.4m で、キャラクターの体格に合わせて拡大縮小します。プランナー（G1）には飛び越えが無いので、踏み切りから着地までは G1 の関節角を手続き的に作って差し込みます（`plannerGenerator.js` の `vaultQpos`）。
 
+## オフィスのシーン
+
+`D:/project/3d_office_scene`（Blender で組んだ日本のオフィス、24m × 18m）を読み込みます。アセットが大きい（約 50MB）ので、Git には入れず `models/office/` にコピーします（`.gitignore` 済み）。
+
+```bash
+blender -b --python tools/setup_office.py -- D:/project/3d_office_scene
+blender -b --python tools/blend_to_vrm.py -- D:/project/3d_office_scene/blender/office_lady.fbx models/office_lady.vrm
+```
+
+- 1 つ目で `office.glb`・Poly Haven と ambientCG のアセット（CC0）をコピーし、椅子 55 脚の位置と向きを `chairs.json` に書き出します。椅子は 1 つのメッシュにまとめられているので、`build_office.py` をもう一度（書き出しなしで）走らせて `placed_chair` の呼び出しを記録します（乱数の種が固定なので同じ配置になります）。
+- 2 つ目でスタッフ（Mixamo のリグ）を VRM にします。`models/office/` が無いときは箱のシーンで起動します。
+- 読み込み・マテリアル・照明・小物の配置は `3d_office_scene` の `src/main.js` と `src/props.js` と同じです（`src/office.js`、`src/officeTextures.js`）。
+- 壁と家具は `COL_*` の箱で当たり判定をします。SOMA の動きは位置もモデルが決めるので、押し戻した分は表示位置のずれ（`offset`）として持ちます。進む向きの 0.6m 以内に箱があると進まずにその方を向き、歩き・走りの目標は箱の手前までに縮めます。
+- 椅子の座面は 0.52m で、SOMA の `sit`（0.4m × 体格）と高さが違うので、腰が下がった姿勢ほど差の分だけ持ち上げます。立ち上がった直後は椅子と机の判定が重なった中にいるので、中心が入っている箱は出るまで判定しません。
+- 飛び越えの箱はオフィスにはありません。
+
 ## 構成
 
 ```
@@ -48,7 +65,9 @@ index.html                          import map（three / three-vrm）と HUD
 src/main.js                         ループ、カメラ、入力から制御信号を作る、障害物の検出
 src/character.js                    VRM（正規化ボーン）／簡易マネキン
 src/input.js                        キー → カメラ基準の方向
-src/world.js                        床・障害物・レイキャスト
+src/world.js                        床・障害物・レイキャスト（箱のシーン）
+src/office.js                       オフィスの読み込み・椅子・当たり判定（壁・家具の箱）
+tools/setup_office.py               3d_office_scene のオフィスを models/office/ にコピーし、椅子の位置を書き出す
 src/motion/player.js                フレーム列の再生と先読み生成
 src/motion/soma.js                  MotionBricks SOMA の入出力（エンコード・デコード・端点補正）
 src/motion/somaGenerator.js         SOMA の再生・目標姿勢の配置・飛び越え・VRM への変換
@@ -105,6 +124,7 @@ Tripo で自動リグを付けたもの（`bone_0`〜`bone_51`）と Mixamo の�
 
 ```bash
 blender -b キャラクター.blend --python tools/blend_to_vrm.py -- models/キャラクター.vrm
+blender -b --python tools/blend_to_vrm.py -- キャラクター.fbx models/キャラクター.vrm
 ```
 
 カメラと飛び越えの判定はキャラクターの腰の高さに合わせて変わります。小柄なキャラクターほど、飛び越えられる箱は低くなります（人間の寸法で 0.95m まで）。

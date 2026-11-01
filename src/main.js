@@ -9,6 +9,7 @@ import { ProceduralGenerator } from './motion/proceduralGenerator.js';
 // ?gen=dummy で手続き的ダミー、?gen=planner で GEAR-SONIC のプランナー（G1）、?gen=g1test で G1 リターゲットのテスト、
 // ?model=URL で ONNX、?modelData=URL でその外部重みファイル、?vrm=URL で VRM を指定する
 // ?ep=webgpu|wasm で推論の実行先を固定する（省略時は WebGPU が無ければ WASM）
+// ?scene=boxes で箱と椅子だけのシーン（既定はオフィス。models/office/ が無ければ箱のシーン）
 const params = new URLSearchParams(location.search);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -20,7 +21,18 @@ document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200);
-const { sun, obstacles, chairs } = createWorld(scene);
+let world = null;
+if (params.get('scene') !== 'boxes') {
+  try {
+    const { createOffice } = await import('./office.js');
+    world = await createOffice(scene, renderer);
+  } catch (e) {
+    console.warn('オフィスを読み込めないので、箱のシーンにします（tools/setup_office.py で models/office/ を作る）', e);
+  }
+}
+world ??= createWorld(scene);
+const { sun, obstacles, chairs, colliders = [], spawn } = world;
+const { pushOut, freeDistance } = colliders.length ? await import('./office.js') : {};
 const character = new Character(scene);
 const input = new Input();
 
@@ -61,7 +73,13 @@ if (gen === 'soma') {
   generator = new G1TestGenerator();
 }
 const player = new MotionPlayer(generator);
-window.demo = { generator, character, player }; // コンソールから状態を見る用
+let camYaw = 0, camPitch = 0.35;
+if (spawn) {
+  generator.teleport?.(spawn.x, spawn.z, spawn.yaw);
+  character.root.position.set(spawn.x, 0, spawn.z);
+  character.yaw = camYaw = spawn.yaw;
+}
+window.demo = { generator, character, player, world }; // コンソールから状態を見る用
 
 // ---- VRM 読み込み ----
 async function loadVRM(url) {
@@ -72,7 +90,9 @@ async function loadVRM(url) {
     alert(`VRM の読み込みに失敗しました: ${e.message}`);
   }
 }
-if (params.get('vrm')) loadVRM(params.get('vrm'));
+// オフィスでは、スタッフ（tools/blend_to_vrm.py で 3d_office_scene の office_lady.fbx から作る）を既定にする
+const vrmUrl = params.get('vrm') ?? (spawn ? './models/office_lady.vrm' : null);
+if (vrmUrl) loadVRM(vrmUrl);
 addEventListener('dragover', (e) => e.preventDefault());
 addEventListener('drop', (e) => {
   e.preventDefault();
@@ -84,7 +104,6 @@ addEventListener('drop', (e) => {
 });
 
 // ---- カメラ（ドラッグで回転する三人称カメラ） ----
-let camYaw = 0, camPitch = 0.35;
 let dragging = false;
 renderer.domElement.addEventListener('pointerdown', () => { dragging = true; });
 addEventListener('pointerup', () => { dragging = false; });
@@ -98,17 +117,23 @@ function updateCamera(dt) {
   const p = character.root.position;
   // 注視点と距離はキャラクターの体格（腰の高さ）に合わせる。マネキン（0.95m）で高さ 1.1m・距離 4.5m
   const size = character.hipsHeight / 0.95;
-  camTarget.lerp(_v.set(p.x, 1.1 * size, p.z), 1 - Math.exp(-dt * 8));
-  const dist = 4.5 * size;
-  camera.position.set(
-    camTarget.x - Math.sin(camYaw) * Math.cos(camPitch) * dist,
-    camTarget.y + Math.sin(camPitch) * dist,
-    camTarget.z - Math.cos(camYaw) * Math.cos(camPitch) * dist,
-  );
+  camTarget.lerp(_v.set(p.x, (colliders.length ? 1.35 : 1.1) * size, p.z), 1 - Math.exp(-dt * 8));
+  const back = _dir.set(-Math.sin(camYaw) * Math.cos(camPitch), Math.sin(camPitch), -Math.cos(camYaw) * Math.cos(camPitch));
+  let dist = (colliders.length ? 2.8 : 4.5) * size;
+  // 室内では、壁や家具にめり込まないよう注視点から後ろへレイを飛ばして縮める
+  _ray.set(camTarget, back);
+  for (const b of colliders) if (b.max.y > 1 && _ray.intersectBox(b, _hit)) dist = Math.min(dist, Math.max(0.4, _hit.distanceTo(camTarget) - 0.15));
+  camDist = dist < camDist ? dist : THREE.MathUtils.lerp(camDist, dist, 1 - Math.exp(-dt * 4));
+  camera.position.copy(camTarget).addScaledVector(back, camDist);
+  if (colliders.length) camera.position.y = Math.min(camera.position.y, 2.55); // 天井 2.7m
   camera.lookAt(camTarget);
-  sun.position.set(p.x + 6, 12, p.z + 4);
-  sun.target.position.copy(p);
+  if (!colliders.length) { // 屋外は影の範囲がキャラクターについて行く
+    sun.position.set(p.x + 6, 12, p.z + 4);
+    sun.target.position.copy(p);
+  }
 }
+const _dir = new THREE.Vector3(), _ray = new THREE.Ray(), _hit = new THREE.Vector3();
+let camDist = 4.5;
 const _v = new THREE.Vector3();
 
 // ---- 制御信号（生成を投げる瞬間の入力から作る） ----
@@ -133,6 +158,7 @@ function getControl() {
     moving, yaw, turn, speed, crouch: input.crouch, vault, g1Scale: character.g1Scale,
     style: STYLES[input.style][0], styleName: STYLES[input.style][1],
     interact: input.takeInteract(), chair: nearestChair(),
+    free: colliders.length ? (y) => freeDistance(colliders, character.root.position, y, 3) : null,
   };
 }
 
@@ -141,7 +167,7 @@ function nearestChair() {
   let best = null, bestDist = 2.5 * (character.hipsHeight / 0.95);
   for (const c of chairs) {
     const d = c.position.distanceTo(character.root.position);
-    if (d < bestDist) { bestDist = d; best = { pos: [c.position.x, 0, c.position.z], yaw: c.userData.yaw }; }
+    if (d < bestDist) { bestDist = d; best = { pos: [c.position.x, 0, c.position.z], yaw: c.userData.yaw, seat: c.userData.seat }; }
   }
   return best;
 }
@@ -171,13 +197,21 @@ function resolveCollision() {
 
 // ---- メインループ ----
 const clock = new THREE.Clock();
+const ignoredBoxes = new Set(); // 中にいる当たり判定の箱（立ち上がった直後の椅子と机）
 let hudTimer = 0;
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
   // 椅子はキャラクターの体格に合わせて拡大縮小する（座面 0.4m は SOMA の人体の寸法）
-  for (const c of chairs) c.scale.setScalar(generator.scale ?? 1);
+  // オフィスの椅子（seat あり）は動かせないので、座面の高さの違いは生成器が腰を持ち上げて合わせる
+  for (const c of chairs) if (!c.userData.seat) c.scale.setScalar(generator.scale ?? 1);
   if (generator.drivesCharacter) {
     generator.update(dt, getControl(), character, probeForSoma);
+    // 壁・家具から押し戻す（座る・立つの途中と座っている間は椅子に入るので判定しない）
+    if (colliders.length && !generator.seq && !generator.seated) {
+      const [dx, dz] = pushOut(character.root.position, colliders, 0.25 * (character.hipsHeight / 0.95), ignoredBoxes);
+      generator.offset.x += dx;
+      generator.offset.z += dz;
+    }
   } else {
     player.update(dt, getControl, character);
     resolveCollision();
