@@ -35,6 +35,7 @@ export async function sim(seconds, control = {}, each) {
     control.interact = false;
     if (pending && wait === 0) wait = Math.max(1, Math.ceil(((g.stats.lastMs || 330) / 1000) * 30));
     if (pending && --wait <= 0) { await pending; pending = null; wait = 0; }
+    ch.update(1 / 30); // VRM の正規化ボーン → 実ボーン
     ch.root.updateMatrixWorld(true);
     if (!Number.isFinite(ch.root.position.x)) throw new Error(`NaN（${g.label}）`);
     each?.(t);
@@ -44,6 +45,7 @@ export async function sim(seconds, control = {}, each) {
 // 位置 (x, z)・向き yaw へ瞬間移動して待機させる
 export async function place(x, z, yaw) {
   if (pending) { await pending; pending = null; }
+  g.scale = ch.hipsHeight / g.restHips; // 描画ループが一度も回っていないと未設定
   const s = g.scale, p = Float32Array.from(g.targets.idle[0].poses[3]);
   const h = g.sk.heading(g.sk.world(p)), d = (yaw - h) / 2, c = Math.cos(d), sn = Math.sin(d);
   const [x0, y0, z0, w0] = p.slice(3, 7);
