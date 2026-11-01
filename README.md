@@ -127,6 +127,8 @@ blender -b キャラクター.blend --python tools/blend_to_vrm.py -- models/キ
 blender -b --python tools/blend_to_vrm.py -- キャラクター.fbx models/キャラクター.vrm
 ```
 
+SOMA の動きは関節の回転で当てたあと、足首を SOMA の足首（体格で換算）の位置に 2 関節の IK で置きます。脚の付け根の間隔が SOMA より狭いキャラクター（`office_lady` は 0.14m、SOMA は 0.23m）でも、歩くときに左右の足が交差しません。走りは SOMA でも足首がほぼ一直線に並ぶので、左右の間隔が 0.09m × 体格より狭いときは両足を外へ広げます。
+
 カメラと飛び越えの判定はキャラクターの腰の高さに合わせて変わります。小柄なキャラクターほど、飛び越えられる箱は低くなります（人間の寸法で 0.95m まで）。
 
 ## MotionBricks のプランナーを動かす手順

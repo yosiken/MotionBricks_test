@@ -23,6 +23,7 @@ const TURN_THRESHOLD = 15;     // 向きがこれ以上変わったら作り直�
 const BLEND_SECONDS = 0.2;     // 新しい動きへのつなぎ
 const HISTORY = 32;
 const MAX_JUMP_HEIGHT = 0.95;  // 飛び越える箱の高さの上限（SOMA の人体の寸法、メートル）
+const MIN_FEET_GAP = 0.09;     // 左右の足首の間隔の下限（SOMA の人体の寸法、メートル）
 const BLOCKED_DISTANCE = 0.6;  // 進む向きの壁・家具がこれより近ければ進まない（ワールドのメートル）
 
 // VRM の正規化ボーン ← SOMA の関節
@@ -66,6 +67,7 @@ export class SomaGenerator {
       this.seatedHips = tget(this.sit.seated.poses[0], 0).p[1];
     }
     this.restInv = this.sk.world(this.sk.reference).map((t) => qinv(t.q));
+    this.footJoints = { left: this.sk.index('LeftFoot'), right: this.sk.index('RightFoot') };
     this.vrmMap = VRM_MAP.map(([bone, joint]) => [bone, this.sk.index(joint)]);
 
     // ---- ONNX Runtime ----
@@ -108,15 +110,16 @@ export class SomaGenerator {
     this.clock += dt;
     this.time += dt;
     this.scale = character.hipsHeight / this.restHips;
-    if (this.queued && this.time >= this.queued.at) this.switchTo(this.queued.frames, this.time - this.queued.at, this.queued.early);
-
-    let pose = samplePose(this.frames, this.time);
     if (this.fade) {
       this.fade.time += dt;
       this.fade.t += dt / BLEND_SECONDS;
       if (this.fade.t >= 1) this.fade = null;
-      else pose = blendPose(samplePose(this.fade.frames, this.fade.time), pose, smooth(this.fade.t));
     }
+    // つなぎを進めてから乗り換える（乗り換えたフレームは古い動きのまま。先に乗り換えると古い動きが 1 フレーム先へ飛ぶ）
+    if (this.queued && this.time >= this.queued.at) this.switchTo(this.queued.frames, this.time - this.queued.at, this.queued.early);
+
+    let pose = samplePose(this.frames, this.time);
+    if (this.fade) pose = blendPose(samplePose(this.fade.frames, this.fade.time), pose, smooth(this.fade.t));
     this.pose = pose;
     if (dt > 0) { // 時間が進んでいないフレームは記録しない（文脈の補間で 0 除算になる）
       this.history.push(pose); this.history.shift();
@@ -320,7 +323,21 @@ export class SomaGenerator {
     character.root.position.z = world[0].p[2] * s + this.offset.z;
     character.yaw = yaw;
     character.applyWorldPose(world[0].p[1] * s - character.hipsHeight, rots);
+    // 回転だけだと、脚の付け根の間隔が狭いキャラクターは左右の足が交差する。足首を SOMA の足首（体格で換算）の位置に置く。
+    // 走りは SOMA でも足首がほぼ一直線に並ぶので、左右の間隔が MIN_FEET_GAP より狭いときは両足を外へ広げる
+    const feet = {};
+    for (const [side, j] of Object.entries(this.footJoints)) {
+      const p = world[j].p;
+      feet[side] = [p[0] * s + this.offset.x, p[1] * s, p[2] * s + this.offset.z];
+    }
+    const rx = Math.cos(yaw), rz = -Math.sin(yaw); // 体の左向き
+    const gap = (feet.left[0] - feet.right[0]) * rx + (feet.left[2] - feet.right[2]) * rz;
+    const widen = Math.max(0, MIN_FEET_GAP * s - gap) / 2;
+    feet.left[0] += rx * widen; feet.left[2] += rz * widen;
+    feet.right[0] -= rx * widen; feet.right[2] -= rz * widen;
+    character.reachFeet(feet);
   }
+
 }
 
 function targetSpeed(poses) {

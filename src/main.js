@@ -117,9 +117,9 @@ function updateCamera(dt) {
   const p = character.root.position;
   // 注視点と距離はキャラクターの体格（腰の高さ）に合わせる。マネキン（0.95m）で高さ 1.1m・距離 4.5m
   const size = character.hipsHeight / 0.95;
-  camTarget.lerp(_v.set(p.x, (colliders.length ? 1.35 : 1.1) * size, p.z), 1 - Math.exp(-dt * 8));
+  camTarget.lerp(_v.set(p.x, (colliders.length ? 1.2 : 1.1) * size, p.z), 1 - Math.exp(-dt * 8));
   const back = _dir.set(-Math.sin(camYaw) * Math.cos(camPitch), Math.sin(camPitch), -Math.cos(camYaw) * Math.cos(camPitch));
-  let dist = (colliders.length ? 2.8 : 4.5) * size;
+  let dist = (colliders.length ? 3.6 : 4.5) * size;
   // 室内では、壁や家具にめり込まないよう注視点から後ろへレイを飛ばして縮める
   _ray.set(camTarget, back);
   for (const b of colliders) if (b.max.y > 1 && _ray.intersectBox(b, _hit)) dist = Math.min(dist, Math.max(0.4, _hit.distanceTo(camTarget) - 0.15));
