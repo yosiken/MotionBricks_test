@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Character } from './character.js';
-import { Input } from './input.js';
+import { Input, STYLES } from './input.js';
 import { createWorld, probeObstacle } from './world.js';
 import { MotionPlayer } from './motion/player.js';
 import { ProceduralGenerator } from './motion/proceduralGenerator.js';
@@ -20,7 +20,7 @@ document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200);
-const { sun, obstacles } = createWorld(scene);
+const { sun, obstacles, chairs } = createWorld(scene);
 const character = new Character(scene);
 const input = new Input();
 
@@ -129,7 +129,21 @@ function getControl() {
   }
   modeLabel = vault ? '飛び越え' : input.crouch ? (moving ? 'しゃがみ歩き' : 'しゃがみ')
     : moving ? (input.walk ? '歩き' : 'ダッシュ') : '待機';
-  return { moving, yaw, turn, speed, crouch: input.crouch, vault, g1Scale: character.g1Scale };
+  return {
+    moving, yaw, turn, speed, crouch: input.crouch, vault, g1Scale: character.g1Scale,
+    style: STYLES[input.style][0], styleName: STYLES[input.style][1],
+    interact: input.takeInteract(), chair: nearestChair(),
+  };
+}
+
+// 座れる距離（2.5m 以内）にある一番近い椅子の位置と正面の向き
+function nearestChair() {
+  let best = null, bestDist = 2.5 * (character.hipsHeight / 0.95);
+  for (const c of chairs) {
+    const d = c.position.distanceTo(character.root.position);
+    if (d < bestDist) { bestDist = d; best = { pos: [c.position.x, 0, c.position.z], yaw: c.userData.yaw }; }
+  }
+  return best;
 }
 
 function wrapAngle(a) {
@@ -160,6 +174,8 @@ const clock = new THREE.Clock();
 let hudTimer = 0;
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
+  // 椅子はキャラクターの体格に合わせて拡大縮小する（座面 0.4m は SOMA の人体の寸法）
+  for (const c of chairs) c.scale.setScalar(generator.scale ?? 1);
   if (generator.drivesCharacter) {
     generator.update(dt, getControl(), character, probeForSoma);
   } else {

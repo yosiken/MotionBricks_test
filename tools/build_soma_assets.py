@@ -4,7 +4,7 @@
     pip install numpy usd-core
     python tools/build_soma_assets.py --motionbricks ../motionbricks_official
 
-出力: models/soma_assets.json（骨格・T ポーズ・各モードの目標姿勢 4 枚ずつ）
+出力: models/soma_assets.json（骨格・T ポーズ・各モードの目標姿勢 4 枚ずつ、飛び越えと椅子の目標列）
 
 BVH は NVIDIA Sample Data Evaluation License（評価・テスト用）なので、
 出力ファイルも models/ に置いて Git には含めない。
@@ -200,15 +200,15 @@ def canonical(poses, parents, names, by_motion):
     """1 枚目の根を原点（地面上）に、向きを +Z にそろえる。"""
     root = poses[0, 0, :3]
     poses = place(poses, -np.array([root[0], 0, root[2]]), 0)
-    if by_motion:
-        d = poses[-1, 0, :3] - poses[0, 0, :3]
+    d = poses[-1, 0, :3] - poses[0, 0, :3]
+    if by_motion and math.hypot(d[0], d[2]) > 0.03:
         yaw = math.atan2(d[0], d[2])
     else:
         yaw = heading(poses[0], parents, names)
     return place(poses, np.zeros(3), -yaw)
 
 
-# ---------- スマートプリミティブ（飛び越え） ----------
+# ---------- スマートプリミティブ（飛び越え・椅子） ----------
 Y_TO_Z = qaxis([1, 0, 0], math.pi / 2)  # SOMA（Y 上）→ 実行時空間（Z 上）
 
 
@@ -238,9 +238,12 @@ def target_component(doc, node_id):
     return find(doc['root'])
 
 
-def jump_sequence(mb, doc_name, seq_index, names, parents, clips):
-    doc = json.loads((mb / 'assets/smart_primitives/soma' / f'{doc_name}.smart_primitive.json').read_text())
-    seq = doc['sequences'][seq_index]
+def load_doc(mb, doc_name):
+    return json.loads((mb / 'assets/smart_primitives/soma' / f'{doc_name}.smart_primitive.json').read_text())
+
+
+def sequence(doc, seq, clips):
+    """スマートプリミティブの目標列を、SOMA の空間（Y 上、プリミティブの原点が原点）の姿勢にする。"""
     to_soma = (np.zeros(3), qmul(qaxis([1, 0, 0], -math.pi / 2), np.array([0, 0, 0, 1.0])))
     steps = []
     for node_id in seq['node_ids']:
@@ -248,13 +251,23 @@ def jump_sequence(mb, doc_name, seq_index, names, parents, clips):
         clip, rate = clips(comp['clip'].split('/')[-1])
         t = comp['frame_index'] / rate if comp['playback_mode'] == 'frames' else comp['sample_time_seconds']
         poses = window(clip, rate, t)
+        if comp['hips_constrained']:
+            # 1 枚目の根の地面方向の位置を原点にする（高さは残す）
+            poses = place(poses, -np.array([poses[0, 0, 0], 0, poses[0, 0, 2]]), 0)
+        poses = poses[:comp['num_poses_to_use']]
         # ノード（Z 上）→ SOMA（Y 上）：to_soma * ノード * Y_TO_Z * 根
         nw = tmul(to_soma, tmul(node_world(doc, node_id), (np.zeros(3), Y_TO_Z)))
-        for f in range(POSES):
+        for f in range(len(poses)):
             p, q = tmul(nw, (poses[f, 0, :3], poses[f, 0, 3:]))
             poses[f, 0, :3], poses[f, 0, 3:] = p, q
         steps.append({'poses': poses, 'early': comp['transition_early_by_frames'],
                       'min': comp['min_tokens'], 'max': comp['max_tokens'], 'name': comp['clip'].split('/')[-1]})
+    return steps
+
+
+def jump_sequence(mb, doc_name, seq_index, clips):
+    doc = load_doc(mb, doc_name)
+    steps = sequence(doc, doc['sequences'][seq_index], clips)
     # 入口 → 出口の向きが +Z になるよう回す（障害物は原点）
     d = steps[-1]['poses'][0, 0, :3] - steps[0]['poses'][0, 0, :3]
     yaw = -math.atan2(d[0], d[2])
@@ -262,6 +275,20 @@ def jump_sequence(mb, doc_name, seq_index, names, parents, clips):
         s['poses'] = place(s['poses'], np.zeros(3), yaw)
     box = next(c for c in [n for n in doc['root']['children'] if n['name'] == 'Box'][0]['components'])
     return steps, box['height']
+
+
+def sit_sequences(mb, names, parents, clips):
+    """椅子：座った姿勢の腰が原点の真上で、+Z を向くようにそろえる。"""
+    doc = load_doc(mb, 'sit')
+    seqs = {s['name']: sequence(doc, s, clips) for s in doc['sequences']}
+    seated = seqs['Sit'][-1]['poses'][0]
+    yaw = -heading(seated, parents, names)
+    offset = -qrot(qaxis([0, 1, 0], yaw), np.array([seated[0, 0], 0, seated[0, 2]]))
+    for steps in seqs.values():
+        for s in steps:
+            s['poses'] = place(s['poses'], offset, yaw)
+    box = next(c for n in doc['root']['children'] for c in n['components'] if c['type'] == 'interaction_box')
+    return seqs['Sit'], seqs['Stand'], box
 
 
 def main():
@@ -299,10 +326,22 @@ def main():
         'crouchIdle': [target('crouch_idle_001__A529.bvh', frame=0, tokens=IDLE_TOKENS)],
         'crouchWalk': [target('crouch_ff_loop_180_R_001__A196.bvh', frame=186, by_motion=True, early=10)],
     }
+    # locomotion_style_variations_bs1_linear と同じ時刻。歩きと同じく 1 秒先に置き、少し手前で次へ移る
+    styles = {
+        'Skipping': target('skipping_R_002__A360.bvh', frame=383, by_motion=True, early=10),
+        'Vogue': target('dance_vouge_vogue_sequence_180_R_002__A316.bvh', t=3.13, by_motion=True, early=10),
+        'Injured Torso': target('injured_torso_grab_walk_ff_180_001__A549.bvh', frame=293, by_motion=True, early=10),
+        'Injured Leg': target('injured_L_leg_grab_walk_ff_180_002__A549.bvh', t=5.55, by_motion=True, early=10),
+        'Zombie': target('zombie_walk_180_R_003__A330.bvh', t=6.04, by_motion=True, early=10),
+        'Combat': target('combat_quickstep_ff_idle_180_R_002__A365.bvh', t=3.66, by_motion=True, early=10),
+    }
     jumps = []
     for doc_name, seq in (('jump_0_5m', 0), ('jump_0_5m', 1), ('jump_0_75m', 1), ('jump_0_75m', 2)):
-        steps, height = jump_sequence(mb, doc_name, seq, names, parents, clips)
+        steps, height = jump_sequence(mb, doc_name, seq, clips)
         jumps.append({'height': height, 'steps': steps})
+    sit, stand, seat = sit_sequences(mb, names, parents, clips)
+    # 座ったままは、座った姿勢を目標にし続ける（公式は座りのループを再生する）。長めにして作り直しを減らす
+    seated = dict(sit[-1], min=IDLE_TOKENS[0], max=IDLE_TOKENS[1])
 
     r = lambda a: np.round(np.asarray(a, dtype=np.float64), 5).tolist()
     pack = lambda t: {'poses': r(t['poses']), 'early': t['early'], 'tokens': [t['min'], t['max']]}
@@ -311,6 +350,9 @@ def main():
         'names': names, 'parents': parents, 'reference': r(reference),
         'targets': {k: [pack(t) for t in v] for k, v in targets.items()},
         'jumps': [{'height': j['height'], 'steps': [pack(s) for s in j['steps']]} for j in jumps],
+        'styles': {k: pack(t) for k, t in styles.items()},
+        'sit': {'sit': [pack(s) for s in sit], 'seated': pack(seated), 'stand': [pack(s) for s in stand],
+                'seat': {k: seat[k] for k in ('width', 'depth', 'height')}},
     }
     args.out.parent.mkdir(exist_ok=True)
     args.out.write_text(json.dumps(out, separators=(',', ':')))
@@ -323,6 +365,15 @@ def main():
     print('  レストの向き（度）', round(math.degrees(heading(reference, parents, names)), 1))
     for j in jumps:
         print(f"  飛び越え 高さ {j['height']:.2f}m:", [np.round(s['poses'][0, 0, :3], 2).tolist() for s in j['steps']])
+    for k, t in styles.items():
+        d = t['poses'][-1, 0, :3] - t['poses'][0, 0, :3]
+        print(f'  スタイル {k:13s} 速さ {math.hypot(d[0], d[2]) * FPS / (POSES - 1):.2f} m/s')
+    for k, steps in (('座る', sit), ('立つ', stand)):
+        for s in steps:
+            w = world_positions(s['poses'][0], parents)
+            print(f"  {k} {s['name'][:28]:28s} 腰", np.round(w[0], 2), '向き', round(math.degrees(heading(s['poses'][0], parents, names))),
+                  '左足', np.round(w[names.index('LeftFoot')], 2), '枚数', len(s['poses']))
+    print('  座面（interaction box）', seat['width'], seat['depth'], seat['height'])
 
 
 if __name__ == '__main__':

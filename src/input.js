@@ -6,10 +6,18 @@ const MOVE_KEYS = {
   ArrowRight: [1, 0], KeyD: [1, 0],
 };
 
+// 歩き方（公式の locomotion_style_variations）。[soma_assets.json の名前, 表示名]
+export const STYLES = [
+  [null, '通常'], ['Skipping', 'スキップ'], ['Vogue', 'ヴォーグ'], ['Injured Torso', '脇腹を押さえる'],
+  ['Injured Leg', '足を引きずる'], ['Zombie', 'ゾンビ'], ['Combat', '戦闘ステップ'],
+];
+
 export class Input {
   constructor() {
     this.down = new Set();
     this.crouch = false;
+    this.style = 0;          // 歩き方（STYLES の番号、0 は通常）
+    this.interact = false;   // E が押された（読んだら戻す）
     this.onToggleHud = null;
     addEventListener('keydown', (e) => {
       if (e.code in MOVE_KEYS) e.preventDefault();
@@ -17,9 +25,17 @@ export class Input {
       this.down.add(e.code);
       if (e.code === 'KeyC') this.crouch = !this.crouch;
       if (e.code === 'KeyH') this.onToggleHud?.();
+      if (e.code === 'KeyV') this.style = (this.style + 1) % STYLES.length;
+      if (e.code === 'KeyE') this.interact = true;
     });
     addEventListener('keyup', (e) => this.down.delete(e.code));
     addEventListener('blur', () => this.down.clear());
+  }
+
+  takeInteract() {
+    const v = this.interact;
+    this.interact = false;
+    return v;
   }
 
   get walk() {

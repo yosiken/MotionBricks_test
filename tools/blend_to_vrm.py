@@ -73,6 +73,17 @@ else:
         o.select_set(o == arm or o in meshes)
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
+# テクスチャの α が Alpha につながっていると半透明（BLEND）で書き出され、描画順が崩れるので不透明にする
+for o in meshes:
+    for slot in o.material_slots:
+        if slot.material and slot.material.node_tree:
+            for n in slot.material.node_tree.nodes:
+                if n.type == 'BSDF_PRINCIPLED':
+                    alpha = n.inputs['Alpha']
+                    for link in list(alpha.links):
+                        slot.material.node_tree.links.remove(link)
+                    alpha.default_value = 1.0
+
 ext = arm.data.vrm_addon_extension
 ext.spec_version = '1.0'
 humanoid = ext.vrm1.humanoid

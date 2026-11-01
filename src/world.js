@@ -26,11 +26,12 @@ export function createWorld(scene) {
 
   const obstacles = [];
   const mat = new THREE.MeshStandardMaterial({ color: 0x7fa3ad, roughness: 0.7 });
-  // [x, z, 幅, 高さ, 奥行き, 回転]
+  // [x, z, 幅, 高さ, 奥行き, 回転]。公式の飛び越えに合わせて、0.5m は奥行き 0.7m 以下の台（jump_0_5m は 0.7m 角）、
+  // 0.75m は奥行き 0.3m の塀（jump_0_75m は幅 2m・奥行き 0.3m）
   const layout = [
-    [0, 6, 3, 0.6, 0.6, 0], [5, 2, 1, 0.8, 1, 0.3], [-6, 4, 4, 0.5, 0.4, 1.2],
-    [-3, -6, 2, 0.7, 0.8, 0.5], [7, -5, 3, 0.55, 0.5, -0.8], [0, -12, 6, 0.9, 0.5, 0],
-    [11, 8, 1.2, 0.6, 1.2, 0], [-10, -2, 0.8, 0.45, 2.5, 0],
+    [0, 6, 3, 0.5, 0.6, 0], [5, 2, 2, 0.75, 0.3, 0.3], [-6, 4, 4, 0.5, 0.4, 1.2],
+    [-3, -6, 2, 0.75, 0.3, 0.5], [7, -5, 3, 0.5, 0.5, -0.8], [0, -12, 6, 0.75, 0.3, 0],
+    [11, 8, 1.2, 0.5, 0.7, 0], [-10, -2, 2.5, 0.75, 0.3, 0],
   ];
   for (const [x, z, w, h, d, r] of layout) {
     const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -41,7 +42,28 @@ export function createWorld(scene) {
     scene.add(box);
     obstacles.push(box);
   }
-  return { sun, obstacles };
+
+  // 椅子（公式の sit と同じく座面の高さ 0.4m）。[x, z, 正面の向き]
+  const chairs = [];
+  const wood = new THREE.MeshStandardMaterial({ color: 0xb08a5a, roughness: 0.6 });
+  for (const [x, z, yaw] of [[2.5, -2, -Math.PI / 2], [-4, 9, Math.PI]]) {
+    const chair = new THREE.Group();
+    const part = (w, h, d, px, py, pz) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wood);
+      m.position.set(px, py, pz);
+      m.castShadow = m.receiveShadow = true;
+      chair.add(m);
+    };
+    part(0.46, 0.05, 0.44, 0, 0.375, -0.06);          // 座面（上面 0.4m）。座った腰の少し後ろが中心
+    part(0.46, 0.5, 0.04, 0, 0.65, -0.27);            // 背もたれ
+    for (const [lx, lz] of [[-0.2, 0.13], [0.2, 0.13], [-0.2, -0.25], [0.2, -0.25]]) part(0.04, 0.35, 0.04, lx, 0.175, lz);
+    chair.position.set(x, 0, z);
+    chair.rotation.y = yaw;
+    chair.userData.yaw = yaw;
+    scene.add(chair);
+    chairs.push(chair);
+  }
+  return { sun, obstacles, chairs };
 }
 
 const raycaster = new THREE.Raycaster();
