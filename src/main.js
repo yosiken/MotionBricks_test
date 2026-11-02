@@ -32,7 +32,7 @@ if (params.get('scene') !== 'boxes') {
 }
 world ??= createWorld(scene);
 const { sun, obstacles, chairs, colliders = [], spawn } = world;
-const { pushOut, freeDistance } = colliders.length ? await import('./office.js') : {};
+const { pushOut, freeDistance, groundAt } = colliders.length ? await import('./office.js') : {};
 const character = new Character(scene);
 const input = new Input();
 
@@ -117,7 +117,8 @@ function updateCamera(dt) {
   const p = character.root.position;
   // 注視点と距離はキャラクターの体格（腰の高さ）に合わせる。マネキン（0.95m）で高さ 1.1m・距離 4.5m
   const size = character.hipsHeight / 0.95;
-  camTarget.lerp(_v.set(p.x, (colliders.length ? 1.2 : 1.1) * size, p.z), 1 - Math.exp(-dt * 8));
+  // 机の上に立っているときは、その高さだけ上げる
+  camTarget.lerp(_v.set(p.x, (colliders.length ? 1.2 : 1.1) * size + (generator.height ?? 0), p.z), 1 - Math.exp(-dt * 8));
   const back = _dir.set(-Math.sin(camYaw) * Math.cos(camPitch), Math.sin(camPitch), -Math.cos(camYaw) * Math.cos(camPitch));
   let dist = (colliders.length ? 3.6 : 4.5) * size;
   // 室内では、壁や家具にめり込まないよう注視点から後ろへレイを飛ばして縮める
@@ -158,7 +159,8 @@ function getControl() {
     moving, yaw, turn, speed, crouch: input.crouch, vault, g1Scale: character.g1Scale,
     style: STYLES[input.style][0], styleName: STYLES[input.style][1],
     interact: input.takeInteract(), chair: nearestChair(),
-    free: colliders.length ? (y) => freeDistance(colliders, character.root.position, y, 3) : null,
+    free: colliders.length ? (y) => freeDistance(colliders, character.root.position, y, 3, generator.height ?? 0) : null,
+    ground: colliders.length ? (x, z) => groundAt(colliders, x, z) : null,
   };
 }
 
@@ -208,7 +210,7 @@ renderer.setAnimationLoop(() => {
     generator.update(dt, getControl(), character, probeForSoma);
     // 壁・家具から押し戻す（座る・立つの途中と座っている間は椅子に入るので判定しない）
     if (colliders.length && !generator.seq && !generator.seated) {
-      const [dx, dz] = pushOut(character.root.position, colliders, 0.25 * (character.hipsHeight / 0.95), ignoredBoxes);
+      const [dx, dz] = pushOut(character.root.position, colliders, 0.25 * (character.hipsHeight / 0.95), ignoredBoxes, generator.height ?? 0);
       generator.offset.x += dx;
       generator.offset.z += dz;
     }

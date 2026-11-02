@@ -23,8 +23,11 @@ const TURN_THRESHOLD = 15;     // 向きがこれ以上変わったら作り直�
 const BLEND_SECONDS = 0.2;     // 新しい動きへのつなぎ
 const HISTORY = 32;
 const MAX_JUMP_HEIGHT = 0.95;  // 飛び越える箱の高さの上限（SOMA の人体の寸法、メートル）
-const MIN_FEET_GAP = 0.09;     // 左右の足首の間隔の下限（SOMA の人体の寸法、メートル）
 const BLOCKED_DISTANCE = 0.6;  // 進む向きの壁・家具がこれより近ければ進まない（ワールドのメートル）
+const MAX_CLIMB = 0.75;        // 登れる段差の上限（SOMA の人体の寸法、メートル。机 0.725m は体格で換算して約 0.62m）
+const CLIMB_REACH = 0.8;       // 机の縁がこれより近づいたら登る（ワールドのメートル）
+const DROP_REACH = 0.5;        // 机の上で、縁がこれより近づいたら降りる（ワールドのメートル）
+const STEP = 0.15;             // これより大きい高さの違いを段差とみなす（ワールドのメートル）
 
 // VRM の正規化ボーン ← SOMA の関節
 const VRM_MAP = [
@@ -34,6 +37,16 @@ const VRM_MAP = [
   ['rightShoulder', 'RightShoulder'], ['rightUpperArm', 'RightArm'], ['rightLowerArm', 'RightForeArm'], ['rightHand', 'RightHand'],
   ['leftUpperLeg', 'LeftLeg'], ['leftLowerLeg', 'LeftShin'], ['leftFoot', 'LeftFoot'], ['leftToes', 'LeftToeBase'],
   ['rightUpperLeg', 'RightLeg'], ['rightLowerLeg', 'RightShin'], ['rightFoot', 'RightFoot'], ['rightToes', 'RightToeBase'],
+  // 指：SOMA の Index1〜4 は手のひらの中の骨（中手骨）から始まるので、VRM の付け根（Proximal）は 2 番目。親指は 1〜3 がそのまま
+  ...['left', 'right'].flatMap((side) => {
+    const S = side === 'left' ? 'Left' : 'Right';
+    return [
+      [`${side}ThumbMetacarpal`, `${S}HandThumb1`], [`${side}ThumbProximal`, `${S}HandThumb2`], [`${side}ThumbDistal`, `${S}HandThumb3`],
+      ...[['Index', 'Index'], ['Middle', 'Middle'], ['Ring', 'Ring'], ['Little', 'Pinky']].flatMap(([v, f]) => [
+        [`${side}${v}Proximal`, `${S}Hand${f}2`], [`${side}${v}Intermediate`, `${S}Hand${f}3`], [`${side}${v}Distal`, `${S}Hand${f}4`],
+      ]),
+    ];
+  }),
 ];
 
 export class SomaGenerator {
@@ -67,7 +80,6 @@ export class SomaGenerator {
       this.seatedHips = tget(this.sit.seated.poses[0], 0).p[1];
     }
     this.restInv = this.sk.world(this.sk.reference).map((t) => qinv(t.q));
-    this.footJoints = { left: this.sk.index('LeftFoot'), right: this.sk.index('RightFoot') };
     this.vrmMap = VRM_MAP.map(([bone, joint]) => [bone, this.sk.index(joint)]);
 
     // ---- ONNX Runtime ----
@@ -99,6 +111,7 @@ export class SomaGenerator {
     this.plan = null;             // 今の目標 { kind, dir, ... }
     this.seq = null;              // 目標列の再生中（飛び越え・座る・立つ）{ steps, index, ground, yaw, then }
     this.seated = null;           // 座っている椅子 { ground, yaw, raise }
+    this.elevation = 0;           // 立っている面の高さ（SOMA の空間。机の上なら天板の高さ）
     this.offset = { x: 0, z: 0 }; // 表示位置 = SOMA の位置 × scale + offset（瞬間移動と壁の押し戻しの分）
     this.wantInteract = false;    // E が押された（生成中でも取りこぼさない）
     this.pose = start;
@@ -155,6 +168,7 @@ export class SomaGenerator {
       const then = this.seq.then;
       this.seq = null;
       if (then === 'seated') this.seated = { ground: this.seqGround, yaw: this.seqYaw, raise: this.seqRaise };
+      if (then === 'climb') this.elevation = this.seqGround[1];
     }
 
     // 椅子：座っている間は着座の姿勢を目標にし続け、E か移動で立ち上がる
@@ -172,7 +186,7 @@ export class SomaGenerator {
       const { ground, yaw, raise } = this.seated;
       return this.request({ poses: this.raiseSeat(placePoses(t.poses, ground, yaw), raise), early: t.early, tokens: t.tokens }, at);
     }
-    if (interact && control.chair && this.sit) {
+    if (interact && control.chair && this.sit && !this.elevation) {
       const { pos, yaw, seat } = control.chair;
       const ground = [(pos[0] - this.offset.x) / this.scale, 0, (pos[2] - this.offset.z) / this.scale];
       const raise = seat ? seat / this.scale - this.seatHeight : 0;
@@ -183,6 +197,12 @@ export class SomaGenerator {
     if (control.moving && !control.crouch && probe) {
       const hit = probe(here, control);
       if (hit && this.startJump(hit, here)) return;
+    }
+
+    // 段差：机の縁に近づいたら登り、机の上で縁に近づいたら（または足元に机が無くなったら）降りる
+    if (control.ground && !control.crouch) {
+      const step = this.findStep(control, here);
+      if (step) return this.startClimb(step, here);
     }
 
     // 壁や家具が目の前なら、進まずにその方を向いて待機する
@@ -201,11 +221,49 @@ export class SomaGenerator {
     const yaw = control.moving ? control.yaw : here.heading;
     // 目標は 1 秒先。その手前に壁があれば、壁の手前まで
     const lead = moving ? Math.min(target.speed * LEAD_SECONDS, (free - BLOCKED_DISTANCE / 2) / this.scale) : 0;
-    const ground = [here.pos[0] + Math.sin(yaw) * lead, 0, here.pos[2] + Math.cos(yaw) * lead];
+    const ground = [here.pos[0] + Math.sin(yaw) * lead, this.elevation, here.pos[2] + Math.cos(yaw) * lead];
     this.plan = { kind, dir: moving ? control.yaw : null };
     this.label = style ? control.styleName
       : { idle: '待機', walk: '歩き', run: 'ダッシュ', crouchIdle: 'しゃがみ', crouchWalk: 'しゃがみ歩き' }[kind];
     this.request({ poses: placePoses(target.poses, ground, yaw), early: target.early, tokens: target.tokens }, sameKind ? at : null);
+  }
+
+  // 立っている面の高さ（ワールドのメートル）
+  get height() {
+    return this.elevation * (this.scale ?? 1);
+  }
+
+  // 進む向きの段差 { at: [x, z]（着地点、ワールド）, top（その面の高さ、ワールド）, yaw }。無ければ null
+  findStep(control, here) {
+    const s = this.scale, x = here.pos[0] * s + this.offset.x, z = here.pos[2] * s + this.offset.z;
+    const now = this.height;
+    // 足元の面が無くなった（押し戻しなどで縁から出た）ら、その場で降りる
+    const under = control.ground(x, z);
+    if (now - under > STEP) {
+      const yaw = control.moving ? control.yaw : here.heading;
+      return { at: [x + Math.sin(yaw) * 0.3, z + Math.cos(yaw) * 0.3], top: under, yaw };
+    }
+    if (!control.moving) return null;
+    const dx = Math.sin(control.yaw), dz = Math.cos(control.yaw);
+    for (let d = 0.1; d <= CLIMB_REACH; d += 0.05) {
+      const top = control.ground(x + dx * d, z + dz * d);
+      if (Math.abs(top - now) <= STEP) continue;
+      const up = top > now;
+      if (up ? (top - now) / s > MAX_CLIMB : d > DROP_REACH) return null;
+      // 着地点：登るときは縁から 0.3m 内側、降りるときは縁から 0.45m 先
+      const land = d + (up ? 0.3 : 0.45);
+      return { at: [x + dx * land, z + dz * land], top: control.ground(x + dx * land, z + dz * land), yaw: control.yaw };
+    }
+    return null;
+  }
+
+  // 段差の上（下）に立つ姿勢を目標にする。登り方・降り方はモデルが作る
+  startClimb(step, here) {
+    const s = this.scale, idle = this.targets.idle[0];
+    const ground = [(step.at[0] - this.offset.x) / s, step.top / s, (step.at[1] - this.offset.z) / s];
+    const label = step.top > this.height ? '机に登る' : '降りる';
+    this.startSequence([{ poses: idle.poses, early: idle.early, tokens: [14, 20] }], ground, step.yaw, label, 'climb');
+    return true;
   }
 
   // 飛び越えを始めたら true。体格で換算した箱が高すぎる（サンプルは 0.5m と 0.82m）ときは false
@@ -256,7 +314,7 @@ export class SomaGenerator {
     p[0] = p[2] = 0;
     Object.assign(this, {
       history: this.history.map(() => p), frames: [p], pose: p, fade: null, queued: null, time: 0,
-      seq: null, seated: null, plan: null, offset: { x, z },
+      seq: null, seated: null, plan: null, offset: { x, z }, elevation: 0,
     });
   }
 
@@ -323,19 +381,6 @@ export class SomaGenerator {
     character.root.position.z = world[0].p[2] * s + this.offset.z;
     character.yaw = yaw;
     character.applyWorldPose(world[0].p[1] * s - character.hipsHeight, rots);
-    // 回転だけだと、脚の付け根の間隔が狭いキャラクターは左右の足が交差する。足首を SOMA の足首（体格で換算）の位置に置く。
-    // 走りは SOMA でも足首がほぼ一直線に並ぶので、左右の間隔が MIN_FEET_GAP より狭いときは両足を外へ広げる
-    const feet = {};
-    for (const [side, j] of Object.entries(this.footJoints)) {
-      const p = world[j].p;
-      feet[side] = [p[0] * s + this.offset.x, p[1] * s, p[2] * s + this.offset.z];
-    }
-    const rx = Math.cos(yaw), rz = -Math.sin(yaw); // 体の左向き
-    const gap = (feet.left[0] - feet.right[0]) * rx + (feet.left[2] - feet.right[2]) * rz;
-    const widen = Math.max(0, MIN_FEET_GAP * s - gap) / 2;
-    feet.left[0] += rx * widen; feet.left[2] += rz * widen;
-    feet.right[0] -= rx * widen; feet.right[2] -= rz * widen;
-    character.reachFeet(feet);
   }
 
 }

@@ -49,14 +49,21 @@ http://localhost:8000 を開きます。
 ```bash
 blender -b --python tools/setup_office.py -- D:/project/3d_office_scene
 blender -b --python tools/blend_to_vrm.py -- D:/project/3d_office_scene/blender/office_lady.fbx models/office_lady.vrm
+blender -b D:/project/3d_office_scene/blender/office_lady02_before_grip.blend --python tools/blend_to_vrm.py -- models/office_lady02.vrm
 ```
 
+2 人目のスタッフ（`office_lady02`）は `?vrm=./models/office_lady02.vrm` で使います。
+
+`blend_to_vrm.py` は、自動リグが太ももの関節を太ももの中心より内側に置いているとき（`office_lady` は ±0.07m、太ももの中心は ±0.09m）、関節を中心へ移します。そのままだと太ももが内側を軸に回り、歩くと左右の脚が当たります。
+
 - 1 つ目で `office.glb`・Poly Haven と ambientCG のアセット（CC0）をコピーし、椅子 55 脚の位置と向きを `chairs.json` に書き出します。椅子は 1 つのメッシュにまとめられているので、`build_office.py` をもう一度（書き出しなしで）走らせて `placed_chair` の呼び出しを記録します（乱数の種が固定なので同じ配置になります）。
+- `blender/Office Chair.fbx` があれば、背もたれの上端まで 1m に縮めた `office_chair.glb` も作ります。デモでは `office.glb` の椅子（`Chairs`）を隠し、このモデルを 55 脚の位置に置きます（メッシュごとに `InstancedMesh` にまとめて描きます）。座面の高さ（0.50m）と、座面の中心が脚の中心より前にある分も `chairs.json` に書き出し、座る位置に使います。
 - 2 つ目でスタッフ（Mixamo のリグ）を VRM にします。`models/office/` が無いときは箱のシーンで起動します。
 - 読み込み・マテリアル・照明・小物の配置は `3d_office_scene` の `src/main.js` と `src/props.js` と同じです（`src/office.js`、`src/officeTextures.js`）。
 - 壁と家具は `COL_*` の箱で当たり判定をします。SOMA の動きは位置もモデルが決めるので、押し戻した分は表示位置のずれ（`offset`）として持ちます。進む向きの 0.6m 以内に箱があると進まずにその方を向き、歩き・走りの目標は箱の手前までに縮めます。
-- 椅子の座面は 0.52m で、SOMA の `sit`（0.4m × 体格）と高さが違うので、腰が下がった姿勢ほど差の分だけ持ち上げます。立ち上がった直後は椅子と机の判定が重なった中にいるので、中心が入っている箱は出るまで判定しません。
+- 椅子の座面（0.50m）は SOMA の `sit`（0.4m × 体格）と高さが違うので、腰が下がった姿勢ほど差の分だけ持ち上げます。立ち上がった直後は椅子と机の判定が重なった中にいるので、中心が入っている箱は出るまで判定しません。
 - 飛び越えの箱はオフィスにはありません。
+- 机と会議テーブル（上面 0.8m 以下で 0.5m 四方より広い箱）には登れます。歩いて縁に 0.8m まで近づくと、縁から 0.3m 内側に「天板の高さで立つ」待機の姿勢を目標にし、登り方（手をついて膝を乗せる）はモデルが作ります。机の上では歩き・待機の目標をその高さに置き、縁に 0.5m まで近づくと縁の 0.45m 先の床へ降ります。島型の対面デスクの判定は中央のパネルまで含む 1 つの箱（高さ 1.1m）なので、左右の天板（0.725m）とパネルに分けます。モデルは平らな床で学習しているためか、机の上を歩くと足首が最大 0.1m ほど天板に沈みます。机の上のモニターやノート PC には判定が無いので通り抜けます。
 
 ## 構成
 
@@ -127,9 +134,9 @@ blender -b キャラクター.blend --python tools/blend_to_vrm.py -- models/キ
 blender -b --python tools/blend_to_vrm.py -- キャラクター.fbx models/キャラクター.vrm
 ```
 
-SOMA の動きは関節の回転で当てたあと、足首を SOMA の足首（体格で換算）の位置に 2 関節の IK で置きます。脚の付け根の間隔が SOMA より狭いキャラクター（`office_lady` は 0.14m、SOMA は 0.23m）でも、歩くときに左右の足が交差しません。走りは SOMA でも足首がほぼ一直線に並ぶので、左右の間隔が 0.09m × 体格より狭いときは両足を外へ広げます。
-
 カメラと飛び越えの判定はキャラクターの腰の高さに合わせて変わります。小柄なキャラクターほど、飛び越えられる箱は低くなります（人間の寸法で 0.95m まで）。
+
+指も SOMA の指の関節から当てます（VRM の指の骨があるとき）。SOMA の指は軽く曲げた形でほぼ止まっていて（歩いている間の変化は 1° 未満）、物を握るような動きはしません。T ポーズのまま指が反り返るのを防ぐためのものです。SOMA の人差し指〜小指は手のひらの中の骨（`Index1` など）から始まるので、VRM の付け根（`Proximal`）には 2 番目の関節を当てます。
 
 ## MotionBricks のプランナーを動かす手順
 

@@ -78,6 +78,41 @@ else:
         o.select_set(o == arm or o in meshes)
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
+# 脚の付け根：自動リグは太ももの関節を太ももの中心より内側に置くことがあり（office_lady は中心 ±0.09m に対して ±0.07m）、
+# そのままだと太ももが内側を軸に回って左右の脚が当たる。関節を太ももの上の方の断面の中心（左右方向だけ）へ移す。
+# レスト姿勢の骨を動かすだけなので、メッシュの形は変わらない
+def thigh_center_x(bone_name, hip_z, knee_z):
+    xs = []
+    for o in meshes:
+        group = o.vertex_groups.get(bone_name)
+        if not group:
+            continue
+        for v in o.data.vertices:
+            w = next((g.weight for g in v.groups if g.group == group.index), 0)
+            if w < 0.5:
+                continue
+            p = o.matrix_world @ v.co
+            if knee_z + 0.6 * (hip_z - knee_z) < p.z < knee_z + 0.85 * (hip_z - knee_z):
+                xs.append(p.x)
+    return (min(xs) + max(xs)) / 2 if xs else None
+
+
+bpy.context.view_layer.objects.active = arm
+bpy.ops.object.mode_set(mode='EDIT')
+inv = arm.matrix_world.inverted()
+for side in ('left', 'right'):
+    bone = arm.data.edit_bones[mapping[f'{side}_upper_leg']]
+    head, knee = arm.matrix_world @ bone.head, arm.matrix_world @ bone.tail
+    x = thigh_center_x(bone.name, head.z, knee.z)
+    if x is None or abs(x) <= abs(head.x):
+        continue
+    print(f'[blend_to_vrm] {side}_upper_leg の付け根を x={head.x:.3f} → {x:.3f} へ')
+    new_head = inv @ Vector((x, head.y, head.z))
+    bone.head = new_head
+    if bone.parent and bone.use_connect:
+        bone.use_connect = False
+bpy.ops.object.mode_set(mode='OBJECT')
+
 # テクスチャの α が Alpha につながっていると半透明（BLEND）で書き出され、描画順が崩れるので不透明にする
 for o in meshes:
     for slot in o.material_slots:

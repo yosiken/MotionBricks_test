@@ -14,6 +14,10 @@ export const BONES = [
   'leftUpperLeg', 'leftLowerLeg', 'leftFoot', 'leftToes',
   'rightUpperLeg', 'rightLowerLeg', 'rightFoot', 'rightToes',
 ];
+// 指（VRM の Humanoid の名前）。手の後ろに、付け根から先の順で並べる
+export const FINGERS = ['Thumb', 'Index', 'Middle', 'Ring', 'Little'].flatMap((f) =>
+  (f === 'Thumb' ? ['Metacarpal', 'Proximal', 'Distal'] : ['Proximal', 'Intermediate', 'Distal']).map((j) => f + j));
+for (const side of ['left', 'right']) BONES.splice(BONES.indexOf(side + 'Hand') + 1, 0, ...FINGERS.map((f) => side + f));
 // VRM Humanoid の親子関係
 const PARENT = {
   spine: 'hips', chest: 'spine', upperChest: 'chest', neck: 'upperChest', head: 'neck',
@@ -22,18 +26,10 @@ const PARENT = {
   leftUpperLeg: 'hips', leftLowerLeg: 'leftUpperLeg', leftFoot: 'leftLowerLeg', leftToes: 'leftFoot',
   rightUpperLeg: 'hips', rightLowerLeg: 'rightUpperLeg', rightFoot: 'rightLowerLeg', rightToes: 'rightFoot',
 };
-const _parentInv = new THREE.Quaternion();
-const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _q3 = new THREE.Quaternion();
-const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
-const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _t = new THREE.Vector3();
-
-// ボーンにワールドでの回転 delta を加える（子も一緒に回る）
-function rotateWorld(bone, delta) {
-  const parent = bone.parent.getWorldQuaternion(_q3);
-  const world = parent.clone().multiply(bone.quaternion);
-  bone.quaternion.copy(parent.invert().multiply(delta.clone().multiply(world)));
-  bone.updateMatrixWorld(true);
+for (const side of ['left', 'right']) {
+  FINGERS.forEach((f, i) => { PARENT[side + f] = i % 3 ? side + FINGERS[i - 1] : side + 'Hand'; });
 }
+const _parentInv = new THREE.Quaternion();
 
 export class Character {
   constructor(scene) {
@@ -121,36 +117,6 @@ export class Character {
     }
     this.body.position.y = height;
     this.root.rotation.y = this.yaw;
-  }
-
-  // 足首（foot ボーン）をワールドの位置 targets[side]（[x, y, z]）に置く 2 関節の IK。膝の曲がる向きと足の向きは今のまま。
-  // 脚の付け根の間隔や脚の長さが動きの元（SOMA）と違うキャラクターでも、足の置き場所が元と同じになる
-  reachFeet(targets) {
-    this.root.updateMatrixWorld(true);
-    for (const side of ['left', 'right']) {
-      const upper = this.bones[side + 'UpperLeg'], lower = this.bones[side + 'LowerLeg'], foot = this.bones[side + 'Foot'];
-      if (!upper || !lower || !foot || !targets[side]) continue;
-      const target = _t.fromArray(targets[side]);
-      const footWorld = foot.getWorldQuaternion(_q1);
-      const a = upper.getWorldPosition(_a), b = lower.getWorldPosition(_b), c = foot.getWorldPosition(_c);
-      const l1 = a.distanceTo(b), l2 = b.distanceTo(c);
-      const d = THREE.MathUtils.clamp(a.distanceTo(target), Math.abs(l1 - l2) + 1e-4, l1 + l2 - 1e-4);
-      // 1. 膝の角度：付け根〜足首の距離が d になるよう、膝を曲げ伸ばしする（軸は今の曲がりの面の法線）
-      const ba = _v1.subVectors(a, b).normalize(), bc = _v2.subVectors(c, b).normalize();
-      const axis = _v3.crossVectors(bc, ba);
-      if (axis.lengthSq() < 1e-8) axis.set(1, 0, 0).applyQuaternion(upper.getWorldQuaternion(_q2)); // 伸びきっているときは膝の左右の軸
-      axis.normalize();
-      const now = Math.acos(THREE.MathUtils.clamp(ba.dot(bc), -1, 1));
-      const want = Math.acos(THREE.MathUtils.clamp((l1 * l1 + l2 * l2 - d * d) / (2 * l1 * l2), -1, 1));
-      rotateWorld(lower, _q2.setFromAxisAngle(axis, now - want));
-      // 2. 太もも：付け根→足首の向きを、付け根→目標へ回す
-      this.root.updateMatrixWorld(true);
-      const from = _v1.subVectors(foot.getWorldPosition(_c), a).normalize(), to = _v2.subVectors(target, a).normalize();
-      rotateWorld(upper, _q2.setFromUnitVectors(from, to));
-      // 3. 足の向きを元に戻す
-      upper.updateMatrixWorld(true);
-      foot.quaternion.copy(lower.getWorldQuaternion(_q2).invert().multiply(footWorld));
-    }
   }
 
   update(dt) {

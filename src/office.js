@@ -77,9 +77,10 @@ export async function createOffice(scene, renderer) {
   };
   const glassLike = { M_Glass: [0.12, 0.05], M_Frosted: [0.7, 0.4], M_WaterBottle: [0.55, 0.1] };
 
-  const [gltf, chairData] = await Promise.all([
+  const chairData = await fetch(`${BASE}/chairs.json`).then((r) => r.json());
+  const [gltf, chairModel] = await Promise.all([
     new GLTFLoader().loadAsync(`${BASE}/office.glb`),
-    fetch(`${BASE}/chairs.json`).then((r) => r.json()),
+    chairData.model && new GLTFLoader().loadAsync(`${BASE}/${chairData.model}`),
   ]);
   const root = gltf.scene;
   root.updateMatrixWorld(true);
@@ -89,6 +90,7 @@ export async function createOffice(scene, renderer) {
     if (o.name.startsWith('LIGHT_')) { lightSpots.push(o.getWorldPosition(new THREE.Vector3())); return; }
     if (o.name.startsWith('PROP_')) { propMarkers.push(o); return; }
     if (o.name.startsWith('Outside')) { o.visible = false; return; }
+    if (o.name === 'Chairs' && chairModel) { o.visible = false; return; } // 椅子のモデルに置き換える
     if (!o.isMesh) return;
     const m = o.material;
     o.castShadow = o.receiveShadow = true;
@@ -106,6 +108,7 @@ export async function createOffice(scene, renderer) {
   });
   toRemove.forEach((o) => o.removeFromParent());
   scene.add(root);
+  splitDeskIslands(colliders);
 
   // 天井パネル位置を 6m 四方ごとにまとめて点光源を置く
   const groups = new Map();
@@ -122,14 +125,35 @@ export async function createOffice(scene, renderer) {
   }
   placeProps(propMarkers, scene); // 待たずに先へ進む
 
+  if (chairModel) placeChairs(chairModel.scene, chairData.chairs, scene);
+
   // 椅子：座った腰は座面の中心より少し前（SOMA の sit では約 7cm）。座ると椅子の当たり判定に入るので、座っている間は判定しない
-  const chairs = chairData.map(({ pos, yaw, seat }) => {
+  const { seat, seatForward } = chairData;
+  const chairs = chairData.chairs.map(({ pos, yaw }) => {
     const c = new THREE.Object3D();
-    c.position.set(pos[0] + Math.sin(yaw) * 0.07, 0, pos[2] + Math.cos(yaw) * 0.07);
+    const ahead = seatForward + 0.07;
+    c.position.set(pos[0] + Math.sin(yaw) * ahead, 0, pos[2] + Math.cos(yaw) * ahead);
     c.userData = { yaw, seat };
     return c;
   });
   return { sun: sky, obstacles: [], chairs, colliders, spawn: { x: -1.55, z: 7.4, yaw: Math.PI } };
+}
+
+// 椅子のモデルを全部の椅子の位置に置く。メッシュごとに InstancedMesh にまとめる（55 脚 × 4 メッシュを 4 回の描画で）
+function placeChairs(model, list, parent) {
+  model.updateMatrixWorld(true);
+  const place = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), one = new THREE.Vector3(1, 1, 1);
+  model.traverse((o) => {
+    if (!o.isMesh) return;
+    const inst = new THREE.InstancedMesh(o.geometry, o.material, list.length);
+    list.forEach(({ pos, yaw }, i) => {
+      place.compose(new THREE.Vector3(...pos), q.setFromAxisAngle(up, yaw), one);
+      inst.setMatrixAt(i, place.multiply(o.matrixWorld));
+    });
+    inst.castShadow = inst.receiveShadow = true;
+    inst.computeBoundingSphere();
+    parent.add(inst);
+  });
 }
 
 // Blender の Empty「PROP_<key>__<n>」を Poly Haven のモデルに置き換える（3d_office_scene の src/props.js と同じ）
@@ -195,7 +219,7 @@ async function placeProps(markers, parent) {
 // XZ 平面で 円 vs AABB の押し出し（3d_office_scene の player.js と同じ）。押し出した量を返す。
 // 中心が入っている箱は、円が完全に出るまで無視する（立ち上がった直後は椅子と机の判定が重なった中にいるので、
 // そこから歩いて出られるように）。ignored は呼び出し側が持ち続ける Set
-export function pushOut(p, boxes, radius, ignored = new Set()) {
+export function pushOut(p, boxes, radius, ignored = new Set(), base = 0) {
   const x0 = p.x, z0 = p.z;
   const dist2 = (b) => {
     const dx = p.x - THREE.MathUtils.clamp(p.x, b.min.x, b.max.x), dz = p.z - THREE.MathUtils.clamp(p.z, b.min.z, b.max.z);
@@ -203,7 +227,8 @@ export function pushOut(p, boxes, radius, ignored = new Set()) {
   };
   for (const b of ignored) if (dist2(b) >= radius * radius) ignored.delete(b);
   for (const b of boxes) if (dist2(b) === 0) ignored.add(b);
-  const active = boxes.filter((b) => b.max.y >= 0.05 && b.min.y <= 1.6 && !ignored.has(b));
+  // base：立っている面の高さ。それより低い箱（乗っている机など）は判定しない
+  const active = boxes.filter((b) => b.max.y >= base + 0.05 && b.min.y <= base + 1.6 && !ignored.has(b));
   for (let iter = 0; iter < 3; iter++) {
     for (const b of active) {
       const cx = THREE.MathUtils.clamp(p.x, b.min.x, b.max.x);
@@ -219,15 +244,45 @@ export function pushOut(p, boxes, radius, ignored = new Set()) {
   return [p.x - x0, p.z - z0];
 }
 
-// pos から yaw 方向に、当たり判定の箱までの距離（far まで）
+// pos から yaw 方向に、当たり判定の箱までの距離（far まで）。base は立っている面の高さ
 const ray = new THREE.Ray(), hitPoint = new THREE.Vector3();
-export function freeDistance(boxes, pos, yaw, far) {
-  ray.origin.set(pos.x, 0.5, pos.z);
+export function freeDistance(boxes, pos, yaw, far, base = 0) {
+  ray.origin.set(pos.x, base + 0.3, pos.z);
   ray.direction.set(Math.sin(yaw), 0, Math.cos(yaw));
   let best = far;
   for (const b of boxes) {
-    if (b.max.y < 0.05 || b.min.y > 1.6 || b.containsPoint(ray.origin)) continue;
+    if (b.max.y < base + 0.05 || b.min.y > base + 1.6 || b.containsPoint(ray.origin)) continue;
     if (ray.intersectBox(b, hitPoint)) best = Math.min(best, hitPoint.distanceTo(ray.origin));
   }
   return best;
+}
+
+// 乗れる面：上面が CLIMB_TOP 以下で、0.5m 四方より広い箱（机・会議テーブル）。(x, z) の真下にある面の高さ（無ければ床の 0）
+const CLIMB_TOP = 0.8;
+export function groundAt(boxes, x, z) {
+  let top = 0;
+  for (const b of boxes) {
+    if (b.max.y > CLIMB_TOP || b.max.y <= top || b.max.x - b.min.x < 0.5 || b.max.z - b.min.z < 0.5) continue;
+    if (x >= b.min.x && x <= b.max.x && z >= b.min.z && z <= b.max.z) top = b.max.y;
+  }
+  return top;
+}
+
+// 島型の対面デスク（幅 1.4m、高さ 1.1m）の判定は中央のパネルまで含む 1 つの箱なので、
+// 左右の天板（0.725m）と中央のパネル（1.1m）に分け、天板には乗れるようにする（build_office.py の desk_island）
+function splitDeskIslands(boxes) {
+  for (const b of [...boxes]) {
+    const w = b.max.x - b.min.x, d = b.max.z - b.min.z;
+    if (Math.abs(b.max.y - 1.1) > 0.01 || Math.abs(Math.min(w, d) - 1.4) > 0.01) continue;
+    const alongX = w < d; // 短い向き（幅 1.4m）が x
+    const c = alongX ? (b.min.x + b.max.x) / 2 : (b.min.z + b.max.z) / 2;
+    const part = (lo, hi, top) => {
+      const nb = b.clone();
+      nb.max.y = top;
+      if (alongX) { nb.min.x = lo; nb.max.x = hi; } else { nb.min.z = lo; nb.max.z = hi; }
+      return nb;
+    };
+    const [lo, hi] = alongX ? [b.min.x, b.max.x] : [b.min.z, b.max.z];
+    boxes.splice(boxes.indexOf(b), 1, part(lo, c, 0.725), part(c, hi, 0.725), part(c - 0.02, c + 0.02, 1.1));
+  }
 }
