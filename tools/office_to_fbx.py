@@ -17,6 +17,7 @@ src/office.js が実行時にしていることを Blender で再現してから
     --no-props      小物を置かない
     --keep-outside  窓の外の景色を残す
     --unity         Unity 向けの軸・単位で書き出す（既定は Blender の標準：-Z 前・Y 上・1 単位 = 1m）
+    --office DIR    models/office 以外の場所にあるオフィス（office.glb・chairs.json・assets のあるフォルダ）を使う
 """
 
 import json
@@ -28,10 +29,18 @@ import bpy
 from mathutils import Matrix, Vector
 
 args = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
+office_dir = None
+if '--office' in args:
+    i = args.index('--office')
+    office_dir = args[i + 1]
+    del args[i:i + 2]
 flags = {a for a in args if a.startswith('--')}
 positional = [a for a in args if not a.startswith('--')]
-BASE = Path(__file__).resolve().parents[1] / 'models/office'
+BASE = Path(office_dir).resolve() if office_dir else Path(__file__).resolve().parents[1] / 'models/office'
 out = Path(positional[0]) if positional else BASE / 'office.fbx'
+if not (BASE / 'office.glb').is_file():
+    sys.exit(f'[office_to_fbx] {BASE / "office.glb"} がありません。先に tools/setup_office.py で models/office/ を作るか、'
+             '--office でオフィスのフォルダを指定してください')
 
 # office.js の SPECS と同じ。pick は glTF の一番上のノード名で選ぶ
 SPECS = {
