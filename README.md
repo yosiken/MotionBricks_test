@@ -63,6 +63,19 @@ blender -b D:/project/3d_office_scene/blender/office_lady02_before_grip.blend --
 - 壁と家具は `COL_*` の箱で当たり判定をします。SOMA の動きは位置もモデルが決めるので、押し戻した分は表示位置のずれ（`offset`）として持ちます。進む向きの 0.6m 以内に箱があると進まずにその方を向き、歩き・走りの目標は箱の手前までに縮めます。
 - 椅子の座面（0.50m）は SOMA の `sit`（0.4m × 体格）と高さが違うので、腰が下がった姿勢ほど差の分だけ持ち上げます。立ち上がった直後は椅子と机の判定が重なった中にいるので、中心が入っている箱は出るまで判定しません。
 - 飛び越えの箱はオフィスにはありません。
+
+### オフィスを FBX に書き出す
+
+`models/office/` をそろえたあと、デモの見た目に近いオフィスを 1 つの FBX にできます（既定の出力は `models/office/office.fbx`）。
+
+```bash
+blender -b --python tools/office_to_fbx.py -- models/office/office.fbx
+```
+
+- `src/office.js` と同じく、当たり判定（`COL_*`）・照明の目印（`LIGHT_*`）・窓の外（`Outside*`）を消し、椅子を `office_chair.glb` に置き換え（55 脚）、`PROP_*` の位置に Poly Haven の小物を置きます。同じ椅子・小物はメッシュを共有します。
+- テクスチャは FBX に埋め込みます（同じものが `office_textures/` にも出ます）。
+- デモが実行時に作るもの（照明、空の HDRI、ambientCG の法線・粗さ、Canvas で描くカーペット・壁・天井・画面の模様、ガラスの透明度）は入りません。
+- `--no-chairs`（椅子を置き換えない）、`--no-props`（小物を置かない）、`--keep-outside`（窓の外を残す）、`--unity`（Unity 向けに単位と軸を焼き込む）を付けられます。
 - 机と会議テーブル（上面 0.8m 以下で 0.5m 四方より広い箱）には登れます。歩いて縁に 0.8m まで近づくと、縁から 0.3m 内側に「天板の高さで立つ」待機の姿勢を目標にし、登り方（手をついて膝を乗せる）はモデルが作ります。机の上では歩き・待機の目標をその高さに置き、縁に 0.5m まで近づくと縁の 0.45m 先の床へ降ります。島型の対面デスクの判定は中央のパネルまで含む 1 つの箱（高さ 1.1m）なので、左右の天板（0.725m）とパネルに分けます。モデルは平らな床で学習しているためか、机の上を歩くと足首が最大 0.1m ほど天板に沈みます。机の上のモニターやノート PC には判定が無いので通り抜けます。
 
 ## 構成
@@ -75,6 +88,7 @@ src/input.js                        キー → カメラ基準の方向
 src/world.js                        床・障害物・レイキャスト（箱のシーン）
 src/office.js                       オフィスの読み込み・椅子・当たり判定（壁・家具の箱）
 tools/setup_office.py               3d_office_scene のオフィスを models/office/ にコピーし、椅子の位置を書き出す
+tools/office_to_fbx.py              models/office/ のオフィスを、椅子と小物を置いた 1 つの FBX に書き出す
 src/motion/player.js                フレーム列の再生と先読み生成
 src/motion/soma.js                  MotionBricks SOMA の入出力（エンコード・デコード・端点補正）
 src/motion/somaGenerator.js         SOMA の再生・目標姿勢の配置・飛び越え・VRM への変換
